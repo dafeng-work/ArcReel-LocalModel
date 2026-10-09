@@ -50,6 +50,7 @@ frontend/dist/
 frontend/.vite/
 frontend/test-results/
 frontend/playwright-report/
+frontend/.pnpm-store/   # pnpm content-addressable store（pnpm fetch/fullsync 缓存）
 *.tsbuildinfo
 
 # Git backup

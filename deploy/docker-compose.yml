@@ -1,9 +1,36 @@
 services:
   arcreel:
-    image: arcreel/arcreel:latest
-    # build: ../  # 本地构建时取消注释，注释掉 image 行
+    # 2026-10-09 起改本地构建：上游 `arcreel/arcreel:latest` 镜像的 alembic head 早于
+    # 本机 fork main 13 个 migration（拉取时上游未到那些 commit），本机任意 alembic
+    # 改动都会让容器找不到 revision 失败。`build: ../` 让镜像基于本机 fork 源码构建，
+    # 与挂载的 deploy/ 一致。这样 G1（资源组互斥）等本机代码改动可生效。
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    # 取消预拉镜像。重启时如本地 Dockerfile 与 .venv 已 cache，build 仅复制新源，
+    # uv sync 命中缓存则秒级完成。tag 用 commit 短 SHA 标识，便于追溯。
+    image: arcreel-local:latest
     ports:
       - "1241:1241"
+    # 上游 CMD 是 `uv run uvicorn ...`，而 `uv run` 每次启动都会重新同步依赖、
+    # 把 Dockerfile 用 `uv sync --no-dev` 刻意排除的 dev 依赖（basedpyright 13MB +
+    # nodejs wheel 57.9MB + ruff/grimp/deptry）现装一遍。实测在本网络环境下这次
+    # 同步会挂起，容器永远起不来。--no-sync 直接用镜像里已构建好的 .venv。
+    command:
+      - uv
+      - run
+      - --no-sync
+      - uvicorn
+      - server.app:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "1241"
+    # 本机算力（ComfyUI / llama-server）跑在宿主机上，容器内 127.0.0.1 指向容器自己。
+    # 显式声明 host-gateway，provider 的 Base URL 才能填 host.docker.internal:<port>。
+    # 上游未声明此项；不声明则所有指向宿主算力的连通性测试必然失败。
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     # 端口发布到宿主机所有网卡：远程部署不得在 .env 中设置 AUTH_ENABLED=false。
     env_file: .env
     environment:
@@ -12,6 +39,14 @@ services:
     # 1) 非特权 user namespace → 放开 docker 默认 seccomp/apparmor profile
     # 2) bwrap 嵌套出的 net namespace 内配置 loopback → 容器需要 NET_ADMIN cap
     #    （否则报 "loopback: Failed RTM_NEWADDR: Operation not permitted"）
+    # 本机（Ubuntu 24.04）apparmor_restrict_unprivileged_userns=1，全局禁止非特权 user namespace。
+    # 这是全局 LSM 开关，容器内的 apparmor=unconfined 绕不过它（上游诊断原文亦如此说明）。
+    # 实测：本机 bwrap 探测「--unshare-net 配 loopback」必须走特权路径才通。
+    #   --privileged                              → 探测通过 ✓
+    #   --cap-add NET_ADMIN + apparmor=unconfined → No permissions to create a new namespace ✗
+    # 选 privileged 而不是改主机 sysctl：特权只落在这一个容器，
+    # 而 `sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` 会削弱整台主机的 LSM 加固。
+    privileged: true
     security_opt:
       - seccomp:unconfined
       - apparmor:unconfined

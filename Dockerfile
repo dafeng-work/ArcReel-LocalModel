@@ -27,7 +27,10 @@ FROM python:3.12-slim AS production
 # 安装系统依赖，并把基础镜像预装的系统包升级到当前仓库版本。
 # APT_REFRESH 由 CI 按 ISO 周传入，值变化时本层缓存失效，保证系统包定期刷新
 ARG APT_REFRESH=unset
+# APT_MIRROR 国内镜像加速（Debian 官方源在国内 apt-get update 会挂起）
+ARG APT_MIRROR=mirrors.tuna.tsinghua.edu.cn
 RUN echo "apt refresh: ${APT_REFRESH}" \
+    && sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources \
     && apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -53,8 +56,10 @@ ENV PYTHONUNBUFFERED=1
 ENV TZ=Asia/Shanghai
 
 # 先复制依赖和包元数据文件，利用缓存；workspace 子包作为依赖随这一步安装，源码须先就位
+# UV_INDEX_URL 国内 PyPI 镜像加速（国内网络下官方 PyPI 下载极慢，build 会卡死）
 COPY pyproject.toml uv.lock README.md ./
 COPY packages/ packages/
+ENV UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 RUN uv sync --no-dev --no-install-project
 
 # 复制应用代码

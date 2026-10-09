@@ -307,3 +307,27 @@ git merge upstream/main  # 季度或按需，被动节奏
 ```
 
 若 README 与上游冲突，以本 fork 版本为准。
+
+
+## 互斥模型设计与实现
+
+本 fork 的核心改动——**G1（资源组互斥）**——直接在 fork 代码里落地：
+
+- `custom_provider` 表加 `exclusive_resource_group` 字段（可空）+ 索引。空 = 现状；非空 = 加入 group 互斥。
+- 调度层（`lib/generation/generation_queue.py`）在 `enqueue_task` 解析 provider_id 后、调 `repo.enqueue` 前，对 image / video lane 抢 `name = "group:<g>"` 的 `worker_lease` 行（用前缀与 worker 心跳命名空间隔离），同 group 互斥串行。text lane 不进锁，4 个 LLM 子任务保持原并发。
+- 抢锁失败抛新异常 `ResourceGroupBusy(group, held_by)`，调用方按需重试或回退。
+- 不主动释放：单 worker 单卡场景下，TTL 600s 之内下一次同 group 任务入队自然失败，达到串行效果；多 worker 部署需要后续主动释放（已知非目标场景）。
+
+**配置示例**：
+
+```python
+# 两个本地 ComfyUI provider 都打组
+from lib.db.repositories.custom_provider_repo import CustomProviderRepository
+repo = CustomProviderRepository(session)
+await repo.update_provider(1, exclusive_resource_group="gpu-local")
+await repo.update_provider(2, exclusive_resource_group="gpu-local")
+```
+
+之后两 provider 的 image / video 任务入队即自动串行，LLM 任务不受影响。
+
+**详细实现**：`fork-ArcReel/lib/generation/generation_queue.py`（`ResourceGroupBusy` 异常 + `_enforce_gpu_resource_group_lock` 方法），`fork-ArcReel/lib/db/models/custom_provider.py`（字段），`fork-ArcReel/alembic/versions/g1_20261009_add_exclusive_resource_group.py`（迁移），`fork-ArcReel/tests/unit/lib/generation/test_generation_queue_resource_group.py`（7 单测）。

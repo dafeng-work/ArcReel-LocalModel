@@ -9,14 +9,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
+from sqlalchemy.exc import IntegrityError
+
 from lib.backends.backend_runtime import install_provider_job_id_store
 from lib.db import safe_session_factory
-from lib.db.base import DEFAULT_USER_ID
+from lib.db.base import DEFAULT_USER_ID, utc_now
 from lib.db.repositories.task_repo import TaskNotCancellableError, TaskRepository
 from lib.generation.generation_admission import generation_admission_lock
 from lib.generation.generation_batch import (
@@ -83,6 +86,23 @@ class ActiveTaskRequestConflict(RuntimeError):
         super().__init__(
             f"resource '{resource_id}' already has active task '{existing_task_id}' with different request options"
         )
+
+
+class ResourceGroupBusy(RuntimeError):
+    """G1：provider 的 exclusive_resource_group 当前被其它 provider 持锁，提交被拒。
+
+    入队时若派生到的 provider 配了 ``exclusive_resource_group``，且 ``media_type`` 属于
+    image / video（text / audio 走原并发），调度器先抢 ``name = "group:<group>"`` 的
+    worker_lease 行；已被其它 provider 持锁（且未过期）则抛此异常，调用方需等待。
+    抢到锁后**不主动释放**——lease_until 兜底（默认 600s，video 任务最长也跑不完）。
+    下一个 task 入队时会因 lease 未过期而抢不到，自然串行。
+    """
+
+    def __init__(self, *, group: str, held_by: str | None) -> None:
+        self.group = group
+        self.held_by = held_by
+        suffix = f" (held by {held_by})" if held_by else ""
+        super().__init__(f"resource group '{group}' is busy{suffix}; another provider is using the shared GPU")
 
 
 class GenerationBatchNotFound(ValueError):
@@ -368,6 +388,103 @@ class GenerationQueue:
     async def assert_project_migration_ok(self, project_name: str) -> None:
         await asyncio.to_thread(assert_project_migration_ok, project_name, self._project_manager)
 
+    # ---- G1 资源组互斥（fork 扩展） ----------------------------------------
+    #
+    # 业务规则（参见 `agent-docs/UPSTREAM-ISSUES.md` Issue 1 与 ArcReel 本机部署笔记）：
+    #   * 仅 image / video lane 参与 G1 锁；text / audio 走原并发路径。
+    #   * provider.exclusive_resource_group 非空时，提交任务前抢 group 名下的 worker_lease
+    #     行（`name = "group:<group>"`），与同 group 的其它 provider 互斥串行。
+    #   * 入队后**不**主动释放——靠 lease_until（600s，video 任务最长也跑不完）自然过期。
+    #     下一个 task 入队时会因 lease 未过期而抢不到，自然串行；这是单卡单 worker 场景下
+    #     最简且贴合实际的释放策略。
+    #   * null group 维持原行为；多 worker 部署需主动释放（这是已知的非目标场景）。
+    _GPU_RESOURCE_GROUP_LEASE_TTL = 600.0
+    _G1_GUARDED_MEDIA_TYPES = frozenset({"image", "video"})
+
+    async def _enforce_gpu_resource_group_lock(
+        self,
+        *,
+        provider_id: str | None,
+        media_type: str,
+        task_type: str,
+    ) -> None:
+        """G1 入队前资源组互斥。"""
+        if provider_id is None:
+            return
+        # 派生出来的 provider 不一定是 custom-*：内置供应商走 RENDER_MEDIA_TYPE / text。
+        # 解析失败（不是 custom 前缀）→ 跳过。
+        from lib.custom_provider import is_custom_provider, parse_provider_id
+
+        if not is_custom_provider(provider_id):
+            return
+        if media_type not in self._G1_GUARDED_MEDIA_TYPES and task_type not in (
+            "video",
+            "reference_video",
+        ):
+            return
+        try:
+            db_id = parse_provider_id(provider_id)
+        except (TypeError, ValueError):
+            return
+
+        # 查 group 名字
+        from lib.db.repositories.custom_provider_repo import CustomProviderRepository
+
+        group: str | None
+        async with self._session_factory() as session:
+            cp_repo = CustomProviderRepository(session)
+            group = await cp_repo.get_exclusive_resource_group(db_id)
+        if not group:
+            return
+
+        # 抢锁（用 provider_id 作 owner：同 provider 多任务可续约，跨 provider 同 group 互斥）
+        lease_name = f"group:{group}"
+        async with self._session_factory() as session:
+            from lib.db.models.task import WorkerLease
+            from sqlalchemy import update
+            from sqlalchemy.future import select
+
+            now_epoch = time.time()
+            lease_until = now_epoch + self._GPU_RESOURCE_GROUP_LEASE_TTL
+            updated_at = utc_now()
+            upd = await session.execute(
+                update(WorkerLease)
+                .where(
+                    WorkerLease.name == lease_name,
+                    (WorkerLease.owner_id == provider_id) | (WorkerLease.lease_until <= now_epoch),
+                )
+                .values(owner_id=provider_id, lease_until=lease_until, updated_at=updated_at)
+            )
+            if upd.rowcount and upd.rowcount > 0:
+                await session.commit()
+                return
+            # 慢路径：插入新行
+            lease = WorkerLease(
+                name=lease_name,
+                owner_id=provider_id,
+                lease_until=lease_until,
+                updated_at=updated_at,
+            )
+            session.add(lease)
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+                # 其它 provider 持锁未过期
+                held_by = await self._peek_group_lease_owner(lease_name)
+                raise ResourceGroupBusy(group=group, held_by=held_by) from None
+
+    async def _peek_group_lease_owner(self, lease_name: str) -> str | None:
+        """诊断辅助：读 group 锁的当前 owner。"""
+        from lib.db.models.task import WorkerLease
+        from sqlalchemy.future import select
+
+        async with self._session_factory() as session:
+            row = (
+                await session.execute(select(WorkerLease.owner_id).where(WorkerLease.name == lease_name))
+            ).first()
+        return row[0] if row else None
+
     @asynccontextmanager
     async def _task_repo(self) -> AsyncGenerator[TaskRepository]:
         """打开一条 TaskRepository 会话，退出时把落地的任务终态发上项目事件总线。
@@ -429,6 +546,16 @@ class GenerationQueue:
                 provider_id = execution_model.provider_id
                 # Video provider/model is only an advisory claim projection until the worker materializes the
                 # current request and persists its pre-submit checkpoint. Enqueue payload never freezes identity.
+
+        # G1 资源组互斥：image / video lane 内若 provider 配了 exclusive_resource_group，
+        # 入队前抢 `name = "group:<group>"` 的 worker_lease。已持锁则抛 ResourceGroupBusy
+        # 由调用方处理（不要静默改顺序）。text / audio 不进 group 锁——LLM 不占 GPU、4 个
+        # 内容分析子任务应继续并发。
+        await self._enforce_gpu_resource_group_lock(
+            provider_id=provider_id,
+            media_type=media_type,
+            task_type=task_type,
+        )
 
         requested_facts = _reference_request_facts(task_type, payload)
         text_request_facts = _text_request_facts(task_type, payload)

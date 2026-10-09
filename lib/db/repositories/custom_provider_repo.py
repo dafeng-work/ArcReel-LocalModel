@@ -103,6 +103,17 @@ class CustomProviderRepository(BaseRepository):
             setattr(provider, key, value)
         return provider
 
+    async def get_exclusive_resource_group(self, provider_id: int) -> str | None:
+        """读 provider 的 exclusive_resource_group 字段。
+
+        G1（资源组互斥）：非空时，此 provider 提交 image / video 任务需在 worker_lease 表
+        抢 `name = "group:<group>"` 行；同 group 的不同 provider 互斥串行。返回 None 即不参与互斥。
+        """
+        provider = await self.get_provider(provider_id)
+        if provider is None:
+            return None
+        return provider.exclusive_resource_group
+
     async def delete_provider(self, provider_id: int) -> None:
         """删除供应商及其所有模型。
 

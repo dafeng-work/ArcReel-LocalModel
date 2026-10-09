@@ -53,6 +53,11 @@ class CustomProvider(TimestampMixin, Base):
     image_max_workers: Mapped[int | None] = mapped_column(Integer, nullable=True)
     video_max_workers: Mapped[int | None] = mapped_column(Integer, nullable=True)
     audio_max_workers: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # G1（资源组互斥）：非空时，此 provider 提交 image / video 任务前先抢 group 名下的
+    # worker_lease 行（`name = "group:<group>"`，与 worker 心跳命名空间隔离），同 group 的
+    # 不同 provider 互斥串行。NULL = 现状行为（不参与互斥）。text lane 不受此字段约束，
+    # 4 个 LLM 子任务继续并发（LLM 不占 GPU）。
+    exclusive_resource_group: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     @property
     def provider_id(self) -> str:
