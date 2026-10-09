@@ -218,3 +218,7 @@ Copyright © 2026 Pollo3470 and ArcReel contributors
 <p align="center">
   If ArcReel helps your work, consider giving the project a ⭐ Star.
 </p>
+
+---
+
+> **This document is the upstream English README. The authoritative version of this fork is the Chinese `README.md` in this repository, which adds "本 fork 适用场景" (applicable scenarios) and "本机部署" (local deployment) sections for the consumer single-GPU + multi-model mutual-exclusion use case. Upstream repo: <https://github.com/ArcReel/ArcReel>. Fork repo: <https://github.com/dafeng-work/ArcReel-LocalModel>.**

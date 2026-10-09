@@ -44,6 +44,20 @@
   <img src="docs/assets/screenshots/hero.webp" alt="ArcReel 工作台" width="900">
 </p>
 
+---
+
+> ⚠️ **这是用户私有 fork，专用于消费级硬件单卡 + 多模型互斥切换场景。**
+>
+> | 项 | 说明 |
+> |---|---|
+> | 上游仓库 | <https://github.com/ArcReel/ArcReel> |
+> | 本 fork 远端 | <https://github.com/dafeng-work/ArcReel-LocalModel> |
+> | 本 README 改写基准 | upstream `08ab3b32`（截至 2026-10-09 15:55） |
+> | 上游原文位置 | 上游 `README.md`（同路径同 commit） |
+> | 主要差异 | ① 新增「本 fork 适用场景」与「本机部署」节；② 不删不改上游任何章节。AGPL-3 与上游同 license。 |
+> | 与上游关系 | 被动同步（`git fetch upstream && git merge upstream/main`）；**不发 PR，不主动建 issue**。 |
+> | 实战文档 | 部署与互斥切换实测见工作区 `agent-docs/RESEARCH.md`、`agent-docs/PROJECT-STATUS.md`（位于 fork 仓库外的本地工作区） |
+
 ## 赞助商
 
 > [想出现在这里？](mailto:support@arc-reel.com)
@@ -218,3 +232,78 @@ Copyright © 2026 Pollo3470 and ArcReel contributors
 <p align="center">
   如果 ArcReel 对你有帮助，欢迎点亮一个 ⭐ Star。
 </p>
+
+## 本 fork 适用场景
+
+本 fork 针对**消费级硬件单卡 + 多模型互斥切换**场景优化，适合以下用户：
+
+- 单卡（AMD Radeon AI PRO R9700 32GB / 16GB 显存级，或同等消费级 NVIDIA GPU）自托管
+- 同时跑多个模型工作流（图像、视频、LLM、TTS），但同卡显存只能跑一个
+- 需要频繁切换不同模型配置（env），且希望切换有纪律可循
+
+**核心约束**：本机一张 GPU 同时只能为一个 model env 服务。本 fork 通过以下手段把这一约束显式化、可管理化：
+
+1. **外部闸门**：`bin/arcreel-env-gate.sh` 在批量任务前切 env + 探测就绪 + 放行；批次级别生效。
+2. **fork 内部互斥**（规划中）：`exclusive_resource_group` 资源组，单任务级别生效，让 ArcReel 调度器感知共享独占资源。详见工作区 `agent-docs/UPSTREAM-ISSUES.md` Issue 1。
+3. **平行 ComfyUI 实例**：生产 8189 + 测试 8200 同时监听（不同 env），同卡同一时刻只有一个实际跑 GPU 任务。
+
+## 本机部署
+
+> 本节描述**本 fork 实际跑起来**的步骤。完整通用流程仍按上方「快速开始」。
+
+### 工作区布局
+
+```
+<your-workspace>/                              # 工作区根（任意名字，例如 ai-stack/web-ArcReel）
+├── fork-ArcReel/                              # 本 fork 的本地工作副本（clone 自本 fork 远端）
+├── agent-docs/                                # 本机 vibe-coding 报告（独立于 fork 仓库）
+└── AGENTS.md                                  # 工作区规则（独立于 fork 仓库）
+```
+
+### 部署步骤
+
+1. 克隆本 fork（替换路径）：
+
+   ```bash
+   git clone git@github.com:dafeng-work/ArcReel-LocalModel.git fork-ArcReel
+   cd fork-ArcReel/deploy
+   cp .env.example .env  # 编辑填入认证等
+   docker compose up -d --force-recreate
+   ```
+
+2. 启动本机 ComfyUI 与模型 env：见本工作区 `AGENTS.md` 的「GPU 与服务纪律」节，按 `bin/arcreel-env-gate.sh` 切 env 后再放行批量任务。
+
+3. 访问 <http://localhost:1241>，进入「设置」注册 ComfyUI provider：
+
+   - provider `custom-1` → `http://host.docker.internal:8189`（生产实例）
+   - provider `custom-2` → `http://host.docker.internal:8200`（测试实例）
+   - 端点定义参考工作区 `bin/txt2img_qwen21_next.json`、`bin/imgref_qwen21_next.json`
+
+### 多模型互斥切换的实战
+
+15 个 env 互斥（`image-qwen21` / `video-ltx23` / `video-hq` / ...），每次切换 30–60s。ArcReel 上游不感知这一约束，**批量任务前必须**用闸门脚本：
+
+```bash
+arcreel-env-gate.sh image-qwen21 -- make arc-batch
+```
+
+闸门脚本来源：用户私有 `bin/arcreel-env-gate.sh`（不在 fork 仓库内）；详见工作区 `agent-docs/RESEARCH.md` §第二阶段。
+
+### 部署适配（必读）
+
+本 fork 部署配置 `deploy/docker-compose.yml` 含三处**本地未提交适配**：
+
+- `extra_hosts: host.docker.internal:host-gateway` —— 容器访问宿主算力
+- `privileged: true` —— bwrap 沙箱探测在 Ubuntu 24.04 + R9700 上需特权路径
+- `command: uv run --no-sync uvicorn …` —— 跳过每次启动重装 85MB dev 依赖
+
+详见工作区 `agent-docs/RESEARCH.md` §附。这些适配属**部署环境差异**，不 commit 到 fork 远端 main；重建部署时需重新套用。
+
+### 与上游同步
+
+```bash
+git fetch upstream
+git merge upstream/main  # 季度或按需，被动节奏
+```
+
+若 README 与上游冲突，以本 fork 版本为准。
