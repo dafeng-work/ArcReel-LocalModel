@@ -9,10 +9,17 @@ from lib.script.script_skeleton import resolve_declared_kind
 
 @dataclass(frozen=True, slots=True)
 class WorkflowStepRule:
-    """One workflow step; the order is presentational only and never a precondition."""
+    """One workflow step; the order is presentational only and never a precondition.
+
+    ``required_env`` 是 G3 单机单卡互斥适配的可选字段：工作流步骤级 env 前置闸门据此知道
+    该步骤需要哪个宿主 env（仅在 ``execution_mode == "exclusive"`` 时启用，由
+    ``lib.workflow.workflow_plan`` 在 next_action 投影层注入 ``PREFLIGHT_ENV_SWITCH``）。
+    默认值 ``None`` 表示该步骤不强制 env 约束（向后兼容现有 11 步逻辑）。
+    """
 
     id: str
     applicable: bool
+    required_env: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,16 +87,26 @@ _PREPROCESSORS: dict[tuple[str, str], str | None] = {
 }
 
 
-def _build_rule(content_mode: str, generation_mode: str) -> WorkflowRule:
+def _build_rule(
+    content_mode: str, generation_mode: str, env_map: dict[str, str] | None = None
+) -> WorkflowRule:
     applicable = set(_CONTENT_STEPS[content_mode])
     if generation_mode == "storyboard":
         applicable.add("storyboard")
+    mapping = env_map or {}
     return WorkflowRule(
         content_mode=content_mode,
         generation_mode=generation_mode,
         skeleton_kind=resolve_declared_kind(content_mode, generation_mode),
         preprocessor=_PREPROCESSORS[(content_mode, generation_mode)],
-        steps=tuple(WorkflowStepRule(id=step_id, applicable=step_id in applicable) for step_id in _STEP_IDS),
+        steps=tuple(
+            WorkflowStepRule(
+                id=step_id,
+                applicable=step_id in applicable,
+                required_env=mapping.get(step_id),
+            )
+            for step_id in _STEP_IDS
+        ),
     )
 
 
@@ -100,13 +117,35 @@ WORKFLOW_RULES: dict[tuple[str, str], WorkflowRule] = {
 }
 
 
-def workflow_rule(content_mode: str, generation_mode: str) -> WorkflowRule:
-    """Return the exhaustive rule for a validated project mode pair."""
+def workflow_rule(
+    content_mode: str, generation_mode: str, *, env_map: dict[str, str] | None = None
+) -> WorkflowRule:
+    """Return the exhaustive rule for a validated project mode pair.
 
+    ``env_map`` 是 G3 注入：把 step-id → env 名映射写进每一步的 ``required_env``。该参数只
+    影响 :class:`WorkflowStepRule` 字段，content_mode / generation_mode → 步骤集与适用性完全
+    不变。``env_map=None`` 时退回到 ``required_env=None``，行为与改动前一致（向后兼容）。
+    """
+
+    if env_map is None:
+        try:
+            return WORKFLOW_RULES[(content_mode, generation_mode)]
+        except KeyError as exc:
+            raise ValueError(f"unsupported workflow mode pair: {content_mode!r}, {generation_mode!r}") from exc
     try:
-        return WORKFLOW_RULES[(content_mode, generation_mode)]
+        base = WORKFLOW_RULES[(content_mode, generation_mode)]
     except KeyError as exc:
         raise ValueError(f"unsupported workflow mode pair: {content_mode!r}, {generation_mode!r}") from exc
+    return WorkflowRule(
+        content_mode=base.content_mode,
+        generation_mode=base.generation_mode,
+        skeleton_kind=base.skeleton_kind,
+        preprocessor=base.preprocessor,
+        steps=tuple(
+            WorkflowStepRule(id=step.id, applicable=step.applicable, required_env=env_map.get(step.id))
+            for step in base.steps
+        ),
+    )
 
 
 __all__ = [

@@ -85,9 +85,17 @@ from lib.workflow.workflow_plan import WorkflowPlan, WorkflowPlanRequest
 from lib.workflow.workflow_state import (
     EpisodeNextStep,
     ProjectSummary,
+    WorkflowActionType,
+    WorkflowNextAction,
     WorkflowRequestError,
     WorkflowStateService,
     WorkflowStatus,
+)
+from server.agent_runtime.preflight_env import (
+    EnvSwitchError,
+    EnvSwitchFailed,
+    EnvSwitchTimeout,
+    ensure_env,
 )
 from server.auth import CurrentUser, create_download_token, verify_download_token
 from server.dependencies import require_project_migration_ok
@@ -876,6 +884,92 @@ async def get_workflow_plan(name: str, request: WorkflowPlanRequest, current_use
         raise NotFoundError("project_not_found", name=name) from exc
     except WorkflowRequestError as exc:
         raise BadRequestError("request_invalid") from exc
+
+
+class WorkflowPreflightDispatchRequest(BaseModel):
+    """``POST /projects/{name}/workflow-dispatch`` 的请求体 —— 仅消费 PREFLIGHT_ENV_SWITCH。
+
+    把上游 workflow-plan 给的 ``next_action``（必须是 ``PREFLIGHT_ENV_SWITCH`` 类型）原样
+    发过来；本端点负责 ensure_env（切 env + 探测就绪），返回 resume_action 的 next_action
+    让前端继续 dispatch 到对应 MCP 工具。
+    """
+
+    next_action: WorkflowNextAction
+
+
+class WorkflowPreflightDispatchResponse(BaseModel):
+    ok: bool
+    switched_to: str | None = None
+    elapsed_seconds: float | None = None
+    resume_action: WorkflowNextAction | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+
+
+@router.post(
+    "/projects/{name}/workflow-dispatch",
+    response_model=WorkflowPreflightDispatchResponse,
+)
+async def workflow_preflight_dispatch(
+    name: str, req: WorkflowPreflightDispatchRequest, current_user: CurrentUser, _t: Translator
+) -> WorkflowPreflightDispatchResponse:
+    """G3 单机单卡互斥适配：消费 PREFLIGHT_ENV_SWITCH。
+
+    收到一个 ``PREFLIGHT_ENV_SWITCH`` next_action 之后：
+    1. 调 :func:`server.agent_runtime.preflight_env.ensure_env` 触发 ``arcreel-env-gate.sh``。
+    2. 成功 → 把 ``resume_action`` 解析回 :class:`WorkflowNextAction` 返回（让前端继续 dispatch）。
+    3. 失败 → 把错误码与 stderr 末尾回传，i18n 文案由前端按 error_code 渲染。
+    """
+
+    if req.next_action.type is not WorkflowActionType.PREFLIGHT_ENV_SWITCH:
+        raise BadRequestError("workflow_dispatch_action_not_preflight")
+
+    target_env = str(req.next_action.args.get("target_env") or "").strip()
+    if not target_env:
+        return WorkflowPreflightDispatchResponse(
+            ok=False,
+            error_code="env_switch_invalid_target",
+            error_message=_t("env_switch_invalid_target"),
+        )
+
+    timeout_seconds = float(req.next_action.args.get("timeout_seconds") or 150)
+
+    try:
+        result = await ensure_env(target_env, timeout_seconds=timeout_seconds)
+    except EnvSwitchTimeout as exc:
+        return WorkflowPreflightDispatchResponse(
+            ok=False,
+            error_code="env_switch_timeout",
+            error_message=_t("env_switch_timeout"),
+        )
+    except EnvSwitchFailed as exc:
+        return WorkflowPreflightDispatchResponse(
+            ok=False,
+            error_code="env_switch_failed",
+            error_message=_t("env_switch_failed"),
+        )
+    except EnvSwitchError as exc:
+        return WorkflowPreflightDispatchResponse(
+            ok=False,
+            error_code="env_switch_failed",
+            error_message=str(exc),
+        )
+
+    # 解析 resume_action 回 WorkflowNextAction —— 失败即原样回传，让上层按 None 处理
+    resume_raw = req.next_action.args.get("resume_action")
+    resume_action: WorkflowNextAction | None = None
+    if isinstance(resume_raw, dict):
+        try:
+            resume_action = WorkflowNextAction.model_validate(resume_raw)
+        except Exception:
+            resume_action = None
+
+    return WorkflowPreflightDispatchResponse(
+        ok=True,
+        switched_to=result.target_env,
+        elapsed_seconds=result.elapsed_seconds,
+        resume_action=resume_action,
+    )
 
 
 @router.get("/projects/{name}")

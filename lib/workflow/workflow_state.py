@@ -151,6 +151,12 @@ class WorkflowActionType(StrEnum):
     # ``build_workflow_plan`` 投影时注入的动作
     PATCH_EPISODE_SCRIPT = "patch_episode_script"
 
+    # G3 单机单卡互斥适配：工作流步骤级 env 前置闸门（仅在 ``execution_mode == "exclusive"``
+    # 且目标 env 与当前宿主 env 不一致时由 ``lib.workflow.workflow_plan`` 注入）。``args`` 携带
+    # ``target_env``（目标 env 名）/ ``timeout_seconds``（默认 150）/ ``eta_seconds``（前端展示
+    # 用）/ ``resume_action``（切换成功后重新 dispatch 的原 action 序列化）。
+    PREFLIGHT_ENV_SWITCH = "preflight_env_switch"
+
     # ``GenerationAction`` 闭集；整批准入判定与任务失败把它原样交回成 next_action
     RETRY = "retry"
     FIX_INPUT = "fix_input"

@@ -23,6 +23,76 @@ from lib.workflow.workflow_state import (
 PositiveStrictInt = Annotated[int, Field(strict=True, gt=0)]
 
 
+#: G3 单机单卡互斥适配：preflight env 切换的默认 timeout（与 arcreel-env-gate.sh 的
+#: GATE_TIMEOUT=150 对齐；前端展示 eta_seconds 与此一致）。
+PREFLIGHT_ENV_SWITCH_TIMEOUT_SECONDS = 150
+#: 前端展示的预计耗时（秒）—— 与 timeout 同值，给用户「切换中（预计 45s）…」的稳定文案。
+PREFLIGHT_ENV_SWITCH_ETA_SECONDS = 45
+
+
+def _apply_preflight_env_switch(
+    *,
+    next_action: WorkflowNextAction,
+    owner: str,
+    complete: bool,
+    rules: tuple[WorkflowStepRule, ...],
+    next_alternatives: list[WorkflowNextAction],
+    execution_mode: str | None,
+    current_host_env: str | None,
+) -> tuple[WorkflowNextAction, list[WorkflowNextAction]]:
+    """G3 前置闸门改写 next_action。
+
+    触发条件（同时满足）：
+    1. ``execution_mode == "exclusive"`` —— ``multi`` 模式不注入（与上游 ArcReel 一致）。
+    2. ``current_host_env`` 已知（不是 None）—— 上层未传即旁路。
+    3. ``owner`` 是 11 个 step 之一且 ``required_env`` 非空。
+    4. ``required_env != current_host_env`` —— 已在目标 env 不注入。
+    5. ``next_action.type`` 不是一个已经显式表达的 terminal/blocking 状态 —— ``NONE`` 与
+       已经有 ``resume_action`` 包裹的 ``PREFLIGHT_ENV_SWITCH`` 不重复注入。
+
+    改写后 ``next_action.args`` 携带 ``target_env`` / ``timeout_seconds`` / ``eta_seconds``
+    / ``resume_action``（原 next_action 的 JSON 序列化）；前端与 dispatch 端据此感知。
+    返回 ``(next_action, next_alternatives)``。改写会把原 next_action 装进 resume_action，
+    原 next_action 的 ``requested_ids`` 透传到新 action 上。
+    """
+
+    if execution_mode != "exclusive":
+        return next_action, next_alternatives
+    if current_host_env is None:
+        return next_action, next_alternatives
+    if complete:
+        return next_action, next_alternatives
+    if next_action.type is WorkflowActionType.NONE:
+        return next_action, next_alternatives
+    if next_action.type is WorkflowActionType.PREFLIGHT_ENV_SWITCH:
+        # 已经是 preflight —— 避免递归包裹（理论上不会发生，但写一道兜底）
+        return next_action, next_alternatives
+
+    owner_rule = next((rule for rule in rules if rule.id == owner), None)
+    if owner_rule is None or owner_rule.required_env is None:
+        return next_action, next_alternatives
+    target_env = owner_rule.required_env
+    if target_env == current_host_env:
+        return next_action, next_alternatives
+
+    return (
+        WorkflowNextAction(
+            type=WorkflowActionType.PREFLIGHT_ENV_SWITCH,
+            args={
+                "target_env": target_env,
+                "current_host_env": current_host_env,
+                "timeout_seconds": PREFLIGHT_ENV_SWITCH_TIMEOUT_SECONDS,
+                "eta_seconds": PREFLIGHT_ENV_SWITCH_ETA_SECONDS,
+                "resume_action": next_action.model_dump(mode="json"),
+            },
+            requested_ids=list(next_action.requested_ids),
+            requires_confirmation=next_action.requires_confirmation,
+            reason=f"workflow step '{owner}' requires env {target_env}; current host env is {current_host_env}",
+        ),
+        next_alternatives,
+    )
+
+
 class WorkflowStepState(StrEnum):
     """Progress of the orchestration step, independent from artifact and task state."""
 
@@ -374,17 +444,31 @@ def build_workflow_plan(
     script_revision: str | None = None,
     task_observations: list[WorkflowTaskObservation] | None = None,
     admission: dict[str, Any] | None = None,
+    env_map: dict[str, str] | None = None,
+    execution_mode: str | None = None,
+    current_host_env: str | None = None,
 ) -> WorkflowPlan:
     """Project one immutable status snapshot and transient request observations.
 
     每条提示只下发一次：``project_problems``（项目级，如数据升级失败）在顶层 ``problems``，
     ``structure_problems`` 在「脚本结构」一步，视频整批准入的逐单元问题只在视频一步的 ``admission`` 里。
+
+    G3 单机单卡互斥适配（仅本机 ``execution_mode == "exclusive"`` 启用）：
+    ``execution_mode`` 与 ``current_host_env`` 由上层（``server/routers/system_config`` /
+    ``server/routers/workflow``）注入；本函数在 ``next_action`` 出口前检测 owner step 的
+    ``required_env`` 是否与 ``current_host_env`` 一致，不一致则把 ``next_action`` 改写为
+    ``PREFLIGHT_ENV_SWITCH``，携带 ``target_env`` / ``timeout_seconds`` / ``eta_seconds`` /
+    ``resume_action``。原 ``next_action`` 在切换成功后再被 dispatch 端恢复。
     """
 
     plan_problems = [workflow_problem(problem) for problem in project_problems or []]
 
     try:
-        rules = workflow_rule(status.project.content_mode, status.project.generation_mode).steps
+        rules = workflow_rule(
+            status.project.content_mode,
+            status.project.generation_mode,
+            env_map=env_map,
+        ).steps
     except ValueError:
         if not status.blockers:
             raise
@@ -485,13 +569,25 @@ def build_workflow_plan(
     else:
         next_action = status.next_action
 
+    # ── G3：单机单卡互斥适配 — 步骤级 env 前置闸门 ─────────────────────────────
+    # 仅 execution_mode == "exclusive" 启用；其他场景 preflight 改写旁路，行为与改动前一致。
+    next_action, next_alternatives = _apply_preflight_env_switch(
+        next_action=next_action,
+        owner=owner,
+        complete=complete,
+        rules=rules,
+        next_alternatives=list(status.next_alternatives) if next_action is status.next_action else [],
+        execution_mode=execution_mode,
+        current_host_env=current_host_env,
+    )
+
     return WorkflowPlan(
         status=status,
         steps=steps,
         blockers=list(status.blockers),
         problems=plan_problems,
         next_action=next_action,
-        next_alternatives=list(status.next_alternatives) if next_action is status.next_action else [],
+        next_alternatives=next_alternatives,
     )
 
 

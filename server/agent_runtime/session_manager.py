@@ -32,6 +32,7 @@ from server.agent_runtime.failure_observation import (
     build_startup_failure_observation,
     failure_observation_json,
 )
+from server.agent_runtime.llm_preflight import ensure_llm_ready, resolve_text_env_async
 from server.agent_runtime.message_serialization import (
     is_main_turn_activity,
     message_to_dict,
@@ -49,6 +50,10 @@ from server.agent_runtime.models import (
     WithdrawalIntent,
 )
 from server.agent_runtime.options_assembler import OptionsAssembler
+from server.agent_runtime.preflight_env import (
+    DEFAULT_CURRENT_ENV_PATH,
+    read_current_host_env,
+)
 from server.agent_runtime.result_status import resolve_result_status
 from server.agent_runtime.sdk_frames import CommandLifecycle
 from server.agent_runtime.session_actor import SessionActor, SessionCommand
@@ -157,6 +162,23 @@ class AgentStartupError(RuntimeError):
         if self.sdk_stderr:
             return f"{self.message}\n\n{self.sdk_stderr}"
         return self.message
+
+
+class LLMUnreachableError(RuntimeError):
+    """G3 v2 — LLM 端点不可达（当前 env 是图片 / 视频 env，llama-server 与 gateway 都没跑）。
+
+    仅在 ``execution_mode == "exclusive"`` 下由 :func:`ensure_llm_ready` 触发：
+    自动切换到文本 env 后仍不可达时抛出，让 UI 显示友好错误而非 ECONNREFUSED 兜底。
+    """
+
+    def __init__(self, target_env: str, current_env: str) -> None:
+        self.target_env = target_env
+        self.current_env = current_env
+        super().__init__(
+            f"LLM endpoint unreachable at {target_env!r} (current host env={current_env!r}). "
+            f"Switch to a text env (e.g. `arcreel-env-gate.sh {target_env} -- true`) "
+            f"and retry, or set system_settings.execution_mode='multi' to disable preflight."
+        )
 
 
 def _make_agent_startup_error(
@@ -1334,6 +1356,16 @@ class SessionManager:
                 accepted = await self._find_sent_message(exited, session_id, client_key)
             if accepted is not None:
                 return accepted
+
+        # G3 v2：会话级 LLM 可达性 preflight —— Agent 思考要调 LLM，当前 env 可能是
+        # 图片 / 视频 env（llama-server 与 r9700-gateway 都没跑）→ ECONNREFUSED → Agent
+        # 永远走不到调工具那一步。这里在 CLI 启动 / 消息投递之前确保 LLM 可达（必要时切
+        # 到文本 env）。multi 模式零开销；exclusive 模式带 60s TTL 缓存。
+        # 切换后仍不可达则抛 LLMUnreachableError —— 不让消息投递给 CLI 触发 10 次重试。
+        if not await ensure_llm_ready():
+            target_env = await resolve_text_env_async()
+            current_env = read_current_host_env(DEFAULT_CURRENT_ENV_PATH)
+            raise LLMUnreachableError(target_env=target_env, current_env=current_env)
 
         managed = await self.get_or_connect(session_id, meta=meta, locale=locale, resumable=resumable)
         managed.last_activity = time.monotonic()

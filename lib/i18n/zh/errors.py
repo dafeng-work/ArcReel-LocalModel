@@ -171,6 +171,13 @@ MESSAGES = {
     "narration_delivery_post_production": "本项目的旁白交付方式是后期配音，不生成旁白配音；如需 TTS 配音，请先在项目设置中改为 TTS 配音",
     "character_voice_binding_invalid": "角色声音绑定方式只能是「提示词约束」或「参考音频」",
     "video_poll_timeout_minimum": "视频轮询超时不能少于 60 秒",
+    # G3 单机单卡互斥适配
+    "execution_mode_invalid": "执行模式只能是 multi 或 exclusive",
+    "env_mapping_invalid": "env_mapping 不是合法 JSON、引用了未知 step id、或包含本机不存在的 env 名",
+    "env_switch_invalid_target": "PREFLIGHT_ENV_SWITCH next_action 未指定 target_env",
+    "env_switch_timeout": "env 切换超时（新模型未在 deadline 内就绪）；请查看 arcreel-env-gate.sh 日志",
+    "env_switch_failed": "env 切换失败（arcreel-env-gate.sh 退出码非零或 ready 探测始终非 2xx）；stderr 末尾见服务端日志",
+    "workflow_dispatch_action_not_preflight": "workflow-dispatch 端点只接受 PREFLIGHT_ENV_SWITCH 类型的 next_action",
     "speech_rate_out_of_range": "语速需在 {min} 到 {max} 之间（字或词/秒）",
     "episode_target_duration_out_of_range": "单集目标时长需在 {min} 到 {max} 秒之间",
     "character_not_found": "角色「{name}」不存在",

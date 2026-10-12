@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from typing import Any
 
@@ -16,6 +17,14 @@ from claude_agent_sdk import McpSdkServerConfig
 from mcp import types
 from mcp.server import Server
 
+from lib.config.dispatcher_schema import effective_env_mapping, parse_execution_mode
+from lib.workflow.tool_step_env import step_for_tool
+from server.agent_runtime.preflight_env import (
+    DEFAULT_CURRENT_ENV_PATH,
+    EnvSwitchError,
+    ensure_env,
+    read_current_host_env,
+)
 from server.agent_toolset.declaration import (
     AgentToolDeclaration,
     UnscopedToolDeclaration,
@@ -24,7 +33,64 @@ from server.agent_toolset.declaration import (
     tool_description,
 )
 from server.agent_toolset.envelope import encode_outcome
-from server.tool_runtime import CallerContext, ProjectScope, Services, ToolOutcome
+from server.tool_runtime import CallerContext, ProjectScope, Services, ToolOutcome, ToolProblem
+
+logger = logging.getLogger(__name__)
+
+
+async def _preflight_for_tool(tool_name: str) -> str | None:
+    """G3 单机单卡互斥：MCP 工具调用前确保宿主 env 已切到目标；返回错误码或 ``None``。
+
+    不需要 preflight 的工具（``step_for_tool`` 返回 ``None``）直接放行，零切换开销。
+    ``execution_mode != "exclusive"`` 也直接放行（与上游 ArcReel 行为一致，零回归）。
+    失败时返回稳定的错误码（``env_switch_failed`` / ``env_switch_timeout`` 等），
+    由调用方包装成 ``ToolOutcome(problem=ToolProblem(code, ...))`` 返回给 Agent。
+    """
+
+    step_id = step_for_tool(tool_name)
+    if step_id is None:
+        return None
+
+    # 读 system_settings（execution_mode / env_mapping）。失败视为 multi，旁路。
+    try:
+        from lib.db import async_session_factory
+        from lib.config.service import ConfigService
+
+        async with async_session_factory() as session:
+            all_settings = await ConfigService(session).get_all_settings()
+    except Exception as exc:  # noqa: BLE001 — 任何 db / 配置读失败都不应阻塞工具调用
+        logger.warning("preflight: failed to read system_settings for %s, skipping: %s", tool_name, exc)
+        return None
+
+    execution_mode = parse_execution_mode(all_settings.get("execution_mode", ""))
+    if execution_mode != "exclusive":
+        return None
+
+    env_mapping = effective_env_mapping(all_settings.get("env_mapping", ""))
+    target_env = env_mapping.get(step_id)
+    if not target_env:
+        return None
+
+    current_env = read_current_host_env(DEFAULT_CURRENT_ENV_PATH)
+    if current_env == target_env:
+        return None
+
+    logger.info(
+        "preflight: %s needs env %s (step=%s, current=%s), switching",
+        tool_name,
+        target_env,
+        step_id,
+        current_env,
+    )
+    try:
+        await ensure_env(target_env)
+    except EnvSwitchError as exc:
+        logger.warning("preflight: ensure_env failed for %s: %s", tool_name, exc)
+        return "env_switch_failed"
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("preflight: unexpected error in ensure_env for %s", tool_name)
+        return "env_switch_failed"
+    return None
 
 
 def embedded_result(declaration: AgentToolDeclaration, outcome: ToolOutcome[Any]) -> types.CallToolResult:
@@ -71,6 +137,19 @@ def embedded_server(
         declaration = declared.get(tool_name)
         if declaration is None:
             raise ValueError(f"Tool '{tool_name}' not found")
+
+        # G3 单机单卡互斥：调用前确保宿主 env 已切到该工具所属 step 需要的 env。
+        # 仅 ``execution_mode == "exclusive"`` 且当前 env 不匹配时触发；否则零开销。
+        preflight_error = await _preflight_for_tool(tool_name)
+        if preflight_error is not None:
+            problem = ToolProblem(
+                preflight_error,
+                f"tool '{tool_name}' requires a host env switch that failed; "
+                f"see /home/dafeng/ai-stack/logs/env_switch_*.log for details, "
+                f"or set system_settings.execution_mode='multi' to disable preflight",
+            )
+            return embedded_result(declaration, ToolOutcome(problem=problem))
+
         if isinstance(declaration, UnscopedToolDeclaration):
             outcome = await invoke_unscoped_declaration(declaration, arguments, caller, services)
         else:

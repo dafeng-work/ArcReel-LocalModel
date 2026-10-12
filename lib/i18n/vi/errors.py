@@ -176,6 +176,13 @@ MESSAGES = {
     "narration_delivery_post_production": "Dự án này giao lời thuyết minh bằng lồng tiếng hậu kỳ nên ArcReel không tạo âm thanh thuyết minh; nếu cần lồng tiếng TTS, hãy đổi dự án sang lồng tiếng TTS trong cài đặt dự án trước",
     "character_voice_binding_invalid": "Cách ràng buộc giọng nhân vật chỉ có thể là theo mô tả hoặc âm thanh tham chiếu",
     "video_poll_timeout_minimum": "Thời gian chờ thăm dò video phải ít nhất 60 giây",
+    # G3 đơn máy đơn GPU chế độ tương thích
+    "execution_mode_invalid": "Chế độ thực thi chỉ có thể là 'multi' hoặc 'exclusive'",
+    "env_mapping_invalid": "env_mapping không phải JSON hợp lệ, tham chiếu step id không xác định, hoặc chứa tên env không tồn tại trên máy này",
+    "env_switch_invalid_target": "PREFLIGHT_ENV_SWITCH next_action không chỉ định target_env",
+    "env_switch_timeout": "Chuyển env quá thời gian (mô hình mới chưa sẵn sàng trước deadline); kiểm tra nhật ký arcreel-env-gate.sh",
+    "env_switch_failed": "Chuyển env thất bại (arcreel-env-gate.sh thoát với mã khác 0 hoặc ready probe không bao giờ trả về 2xx); xem nhật ký phía máy chủ để biết cuối stderr",
+    "workflow_dispatch_action_not_preflight": "Điểm cuối workflow-dispatch chỉ chấp nhận next_action kiểu PREFLIGHT_ENV_SWITCH",
     "speech_rate_out_of_range": "Nhịp đọc phải nằm trong khoảng {min} đến {max} (ký tự hoặc từ mỗi giây)",
     "episode_target_duration_out_of_range": "Thời lượng mục tiêu mỗi tập phải nằm trong khoảng {min} đến {max} giây",
     "character_not_found": "Nhân vật '{name}' không tồn tại",

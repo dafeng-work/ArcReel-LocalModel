@@ -176,6 +176,13 @@ MESSAGES = {
     "narration_delivery_post_production": "This project delivers narration as post-production voiceover, so ArcReel does not generate narration audio; switch the project to TTS voiceover in project settings first",
     "character_voice_binding_invalid": "Character voice binding must be either prompt-based or reference audio",
     "video_poll_timeout_minimum": "Video polling timeout must be at least 60 seconds",
+    # G3 单机单卡互斥适配
+    "execution_mode_invalid": "Execution mode must be either 'multi' or 'exclusive'",
+    "env_mapping_invalid": "env_mapping is invalid JSON, references unknown step ids, or contains env names that do not exist on this host",
+    "env_switch_invalid_target": "PREFLIGHT_ENV_SWITCH next_action did not specify a target_env",
+    "env_switch_timeout": "Env switch timed out before the new model became ready; check arcreel-env-gate.sh logs",
+    "env_switch_failed": "Env switch failed (arcreel-env-gate.sh exited with non-zero status or ready probe never got 2xx); see server log for stderr tail",
+    "workflow_dispatch_action_not_preflight": "workflow-dispatch endpoint only accepts PREFLIGHT_ENV_SWITCH next_action",
     "speech_rate_out_of_range": "Spoken pace must be between {min} and {max} (characters or words per second)",
     "episode_target_duration_out_of_range": "Episode target length must be between {min} and {max} seconds",
     "character_not_found": "Character '{name}' does not exist",

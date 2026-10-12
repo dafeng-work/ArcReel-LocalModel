@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from packaging.version import InvalidVersion, Version
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lib.backends.audio_backends.base import AudioCapability
@@ -33,6 +33,13 @@ from lib.backends.generation_type_buckets import (
     custom_model_buckets,
 )
 from lib.backends.http_status_errors import raise_for_status_redacted
+from lib.config.dispatcher_schema import (
+    effective_env_mapping,
+    list_available_envs,
+    parse_env_mapping,
+    parse_execution_mode,
+    validate_env_mapping,
+)
 from lib.config.registry import PROVIDER_REGISTRY
 from lib.config.repository import mask_secret
 from lib.config.resolver import ConfigResolver
@@ -43,6 +50,14 @@ from lib.infra.api_errors import UnprocessableError
 from lib.infra.httpx_shared import get_http_client
 from lib.market.sources import PROXY_PREFIX_SETTING
 from lib.speech.narration_config import parse_tts_backend
+from server.agent_runtime.preflight_env import (  # noqa: F401 — re-exported for workflow router reuse
+    DEFAULT_CURRENT_ENV_PATH,
+    EnvSwitchError,
+    EnvSwitchFailed,
+    EnvSwitchGateMissing,
+    EnvSwitchTimeout,
+    ensure_env,
+)
 from server.dependencies import get_config_service
 from server.i18n import Locale, Translator
 from server.routers._validators import validate_backend_value
@@ -74,6 +89,10 @@ class _OptionsDict(TypedDict):
     audio_backends: list[str]
     provider_names: dict[str, str]
     model_names: dict[str, str]
+    # G3 单机单卡互斥适配：宿主机可用的 env 名集合（扫描 /home/dafeng/ai-stack/env/）。
+    available_envs: list[str]
+    # 当前宿主 env 名（读 run/current.env；读不到为 null）。
+    current_host_env: str | None
 
 
 _MEDIA_TO_OPTION_LIST = {
@@ -82,6 +101,19 @@ _MEDIA_TO_OPTION_LIST = {
     "text": "text_backends",
     "audio": "audio_backends",
 }
+
+
+def _read_current_host_env() -> str | None:
+    """读 ``/home/dafeng/ai-stack/run/current.env``。读不到返回 None —— 不抛。"""
+
+    try:
+        value = DEFAULT_CURRENT_ENV_PATH.read_text().strip()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        logger.exception("failed to read %s", DEFAULT_CURRENT_ENV_PATH)
+        return None
+    return value or None
 
 
 def _load_app_version(pyproject_path: Path) -> str:
@@ -275,6 +307,8 @@ async def _build_options(svc: ConfigService, session: AsyncSession, locale: str 
         audio_backends=by_media["audio_backends"],
         provider_names=provider_names,
         model_names=_model_names(candidates),
+        available_envs=list(list_available_envs()),
+        current_host_env=_read_current_host_env(),
     )
 
 
@@ -329,6 +363,28 @@ class SystemConfigPatchRequest(BaseModel):
     # 各档未设置回退 default_text_backend。
     text_backend_simple: str | None = None
     text_backend_complex: str | None = None
+    # G3 单机单卡互斥适配：工作流步骤级 env 切换配置。
+    # ``execution_mode``: ``multi``（默认，与上游 ArcReel 一致）| ``exclusive``（启用 preflight）。
+    # ``env_mapping``: JSON 字符串，step-id → 宿主机 env 名映射；空串 = 用 ``lib.config.dispatcher_schema.DEFAULT_ENV_MAPPING``。
+    execution_mode: str | None = None
+    env_mapping: str | None = None
+
+
+class PreflightTestRequest(BaseModel):
+    """``POST /system/config/test-preflight`` 的请求体 —— 仅做 current state probe，不真实切 env。"""
+
+    target_env: str | None = Field(
+        default=None,
+        description="可选：模拟指定目标 env；若为空则仅返回 current_host_env 与可用 env 列表。",
+    )
+
+
+class PreflightTestResponse(BaseModel):
+    current_host_env: str | None
+    available_envs: list[str]
+    target_env: str | None
+    would_switch: bool
+    reason: str
 
 
 # Setting keys that map directly to string DB settings
@@ -409,6 +465,10 @@ async def get_system_config(
         "text_backend_simple": all_s.get("text_backend_simple") or "",
         "text_backend_complex": all_s.get("text_backend_complex") or "",
         "market_github_proxy_prefix": all_s.get(PROXY_PREFIX_SETTING) or "",
+        # G3 单机单卡互斥适配字段。执行模式默认 multi；env_mapping 默认空字符串，由
+        # effective_env_mapping 决定是否回退到 dispatcher_schema.DEFAULT_ENV_MAPPING。
+        "execution_mode": parse_execution_mode(all_s.get("execution_mode", "")),
+        "env_mapping": all_s.get("env_mapping", ""),
     }
 
     options = await _build_options(svc, session, locale)
@@ -633,7 +693,79 @@ async def patch_system_config(
             value = patch[key]
             await svc.set_setting(key, str(value).strip() if value else "")
 
+    # G3 单机单卡互斥适配字段
+    if "execution_mode" in patch and patch["execution_mode"] is not None:
+        try:
+            mode = parse_execution_mode(patch["execution_mode"])
+        except ValueError as exc:
+            raise UnprocessableError("execution_mode_invalid") from exc
+        await svc.set_setting("execution_mode", mode)
+
+    if "env_mapping" in patch and patch["env_mapping"] is not None:
+        raw = str(patch["env_mapping"] or "")
+        # 解析 + 校验：parse_env_mapping 抛 JSON 错；validate_env_mapping 抛 key/env 错。
+        # 两类错误都收口到 UnprocessableError 透传 i18n 码。
+        try:
+            parsed = parse_env_mapping(raw)
+            if parsed:
+                validate_env_mapping(parsed)
+        except ValueError as exc:
+            raise UnprocessableError("env_mapping_invalid") from exc
+        await svc.set_setting("env_mapping", raw)
+
     await session.commit()
 
     # Return updated config
     return await get_system_config(svc=svc, locale=locale, session=session)
+
+
+# ---------------------------------------------------------------------------
+# POST /system/config/test-preflight — G3 dry-run
+# ---------------------------------------------------------------------------
+
+
+@router.post("/system/config/test-preflight", response_model=PreflightTestResponse)
+async def test_preflight(req: PreflightTestRequest) -> PreflightTestResponse:
+    """Dry-run：仅读 current_host_env + 列出可用 env，**不真实切 env**。
+
+    上层 Web UI 的「测试 preflight」按钮调这个端点；让用户在不破坏当前会话的前提下验证：
+    宿主机是否暴露 env 目录、current.env 是否可读、目标 env 是否在白名单。
+    """
+
+    current = _read_current_host_env()
+    available = list(list_available_envs())
+    target = req.target_env.strip() if req.target_env else None
+
+    if target is None:
+        return PreflightTestResponse(
+            current_host_env=current,
+            available_envs=available,
+            target_env=None,
+            would_switch=False,
+            reason="no target_env provided; only current_host_env and available_envs are reported",
+        )
+
+    if target not in available:
+        return PreflightTestResponse(
+            current_host_env=current,
+            available_envs=available,
+            target_env=target,
+            would_switch=False,
+            reason=f"target_env {target!r} is not in available_envs on this host",
+        )
+
+    would_switch = current != target
+    if current is None:
+        reason = "current_host_env unknown (current.env unreadable); ensure_env will force-switch"
+    elif would_switch:
+        reason = f"current_host_env={current!r} != target_env={target!r}; ensure_env will run arcreel-env-gate.sh"
+    else:
+        reason = f"current_host_env already equals target_env={target!r}; ensure_env is a no-op"
+
+    return PreflightTestResponse(
+        current_host_env=current,
+        available_envs=available,
+        target_env=target,
+        would_switch=would_switch,
+        reason=reason,
+    )

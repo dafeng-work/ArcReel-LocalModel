@@ -7,6 +7,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, get_args
 
+from lib.config.dispatcher_schema import (
+    effective_env_mapping,
+    parse_execution_mode,
+)
 from lib.config.resolver import ConfigResolver
 from lib.db.base import DEFAULT_USER_ID
 from lib.generation.generation_queue import GenerationQueue, get_generation_queue
@@ -40,6 +44,7 @@ from lib.workflow.workflow_plan import (
     draft_repair_resource_id,
 )
 from lib.workflow.workflow_state import WorkflowBlocker, WorkflowStateService, WorkflowStatus
+from server.agent_runtime.preflight_env import DEFAULT_CURRENT_ENV_PATH, read_current_host_env
 from server.draft_workflow import DraftDocType
 from server.services.admission.video_batch_admission import (
     admit_reference_video_batch,
@@ -81,12 +86,24 @@ class WorkflowPlanner:
         queue: GenerationQueue | None = None,
         config_resolver: ConfigResolver | None = None,
     ) -> WorkflowPlan:
+        from lib.db import async_session_factory as _default_async_session_factory
+        from lib.config.service import ConfigService
+
         queue = queue or get_generation_queue()
         status = await asyncio.to_thread(
             WorkflowStateService(self._pm).get_status,
             project_name,
             request.episode_id,
         )
+        # G3：读 execution_mode / env_mapping / current_host_env 一次性注入到 build_workflow_plan。
+        # exclusive 模式 + current != required_env 时 build_workflow_plan 会把 next_action
+        # 改写成 PREFLIGHT_ENV_SWITCH，由 dispatch 端走 arcreel-env-gate.sh 切 env。
+        async with _default_async_session_factory() as _session:
+            all_settings = await ConfigService(_session).get_all_settings()
+        execution_mode = parse_execution_mode(all_settings.get("execution_mode", ""))
+        env_map = effective_env_mapping(all_settings.get("env_mapping", ""))
+        current_host_env = read_current_host_env(DEFAULT_CURRENT_ENV_PATH) if DEFAULT_CURRENT_ENV_PATH is not None else None
+
         blocked = next((b for b in status.blockers if b.code == MIGRATION_FAILURE_CODE), None)
         if blocked is not None:
             # The migration verdict is the whole plan: nothing downstream can be
@@ -97,6 +114,9 @@ class WorkflowPlanner:
                 script_revision=None,
                 task_observations=[],
                 admission=None,
+                env_map=env_map,
+                execution_mode=execution_mode,
+                current_host_env=current_host_env,
             )
         facts = await self._script_facts(project_name, status)
         structure_problems = self._structure_problems(facts)
@@ -119,6 +139,9 @@ class WorkflowPlanner:
             script_revision=facts.revision if facts is not None else None,
             task_observations=tasks,
             admission=admission,
+            env_map=env_map,
+            execution_mode=execution_mode,
+            current_host_env=current_host_env,
         )
 
     async def _migration_problem(self, project_name: str, blocker: WorkflowBlocker) -> GenerationProblem:
