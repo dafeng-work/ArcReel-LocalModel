@@ -102,11 +102,10 @@ class TestG1OwnerByProviderAndMediaType:
         await db_session.flush()
         return provider.id
 
-    async def test_same_provider_same_media_type_can_extend(
-        self, db_engine
-    ) -> None:
+    async def test_same_provider_same_media_type_can_extend(self, db_engine) -> None:
         from sqlalchemy.ext.asyncio import async_sessionmaker
 
+        from lib.db.models.task import WorkerLease
         from lib.db.repositories.custom_provider_repo import CustomProviderRepository
         from lib.generation.generation_queue import GenerationQueue
 
@@ -132,10 +131,13 @@ class TestG1OwnerByProviderAndMediaType:
         await queue._enforce_gpu_resource_group_lock(
             provider_id=f"custom-{db_id}", media_type="image", task_type="image"
         )
+        # 续约后 lease 持锁者仍是自己（owner_id 形如 "<provider>:<media_type>"）。
+        async with factory() as s:
+            lease_row = await s.get(WorkerLease, "group:gpu-local")
+            assert lease_row is not None
+            assert lease_row.owner_id == f"custom-{db_id}:image"
 
-    async def test_same_provider_cross_media_type_is_busy(
-        self, db_engine
-    ) -> None:
+    async def test_same_provider_cross_media_type_is_busy(self, db_engine) -> None:
         from sqlalchemy.ext.asyncio import async_sessionmaker
 
         from lib.db.repositories.custom_provider_repo import CustomProviderRepository

@@ -272,6 +272,8 @@ export default {
   'action_repair_video_units': 'fix the script units flagged below',
   'action_generate_videos': 'generate the missing videos',
   'action_patch_episode_script': 'correct the script fields listed below',
+  'action_preflight_env_switch':
+    'switch the host environment before dispatching (single-GPU mutex)',
   'action_create_edit_timeline': 'create an edit timeline and let the Agent edit it',
   'action_retry_project_migration': 'fix the reported project files, then retry the data upgrade',
 

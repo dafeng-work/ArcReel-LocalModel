@@ -169,6 +169,8 @@ class TestGetSystemConfig:
             "narration_voice",
             "narration_speed",
             "market_github_proxy_prefix",
+            "execution_mode",
+            "env_mapping",
         }
         assert set(settings.keys()) == expected_keys
 

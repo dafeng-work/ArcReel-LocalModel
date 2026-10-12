@@ -29,9 +29,7 @@ def upgrade() -> None:
     """加可空列 `exclusive_resource_group` + 索引。SQLite 不支持在 batch_alter_table 里
     直接建索引，拆成两步。"""
     with op.batch_alter_table("custom_provider", schema=None) as batch_op:
-        batch_op.add_column(
-            sa.Column("exclusive_resource_group", sa.String(length=64), nullable=True)
-        )
+        batch_op.add_column(sa.Column("exclusive_resource_group", sa.String(length=64), nullable=True))
     op.create_index(
         "ix_custom_provider_exclusive_resource_group",
         "custom_provider",

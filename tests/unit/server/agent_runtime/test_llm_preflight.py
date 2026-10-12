@@ -14,11 +14,13 @@ def _reset_cache():
     lp.invalidate_cache()
 
 
-def _patch_settings(monkeypatch: pytest.MonkeyPatch, settings: dict[str, str]) -> None:
-    async def _fake_read() -> dict[str, str]:
+def _settings_reader(settings: dict[str, str]):
+    """构造 ``ensure_llm_ready`` 的 read_settings_async seam，避免 monkey-patch 私有符号。"""
+
+    async def _read() -> dict[str, str]:
         return settings
 
-    monkeypatch.setattr(lp, "_read_settings_async", _fake_read)
+    return _read
 
 
 # ---- probe_llm_endpoint ----------------------------------------------------
@@ -29,7 +31,7 @@ async def test_probe_llm_endpoint_success(monkeypatch: pytest.MonkeyPatch) -> No
         status_code = 200
 
     class _FakeClient:
-        async def get(self, url, timeout=None):  # noqa: ASYNC109
+        async def get(self, url, timeout=None):  # noqa: ASYNC109 -- httpx.AsyncClient.get 形参与 stub 形参与生产一致；mock helper 无副作用
             return _Resp()
 
     monkeypatch.setattr(lp, "get_http_client", lambda: _FakeClient())
@@ -41,7 +43,7 @@ async def test_probe_llm_endpoint_5xx_returns_false(monkeypatch: pytest.MonkeyPa
         status_code = 503
 
     class _FakeClient:
-        async def get(self, url, timeout=None):  # noqa: ASYNC109
+        async def get(self, url, timeout=None):  # noqa: ASYNC109 -- httpx.AsyncClient.get 形参与 stub 形参与生产一致；mock helper 无副作用
             return _Resp()
 
     monkeypatch.setattr(lp, "get_http_client", lambda: _FakeClient())
@@ -52,7 +54,7 @@ async def test_probe_llm_endpoint_connection_error_returns_false(monkeypatch: py
     import httpx
 
     class _FakeClient:
-        async def get(self, url, timeout=None):  # noqa: ASYNC109
+        async def get(self, url, timeout=None):  # noqa: ASYNC109 -- httpx.AsyncClient.get 形参与 stub 形参与生产一致；mock helper 无副作用
             raise httpx.ConnectError("refused")
 
     monkeypatch.setattr(lp, "get_http_client", lambda: _FakeClient())
@@ -70,9 +72,8 @@ async def test_multi_mode_returns_true_without_probing(monkeypatch: pytest.Monke
         return False
 
     monkeypatch.setattr(lp, "probe_llm_endpoint", _fake_probe)
-    _patch_settings(monkeypatch, {"execution_mode": "multi"})
 
-    result = await lp.ensure_llm_ready()
+    result = await lp.ensure_llm_ready(read_settings_async=_settings_reader({"execution_mode": "multi"}))
     assert result is True
     assert probed["n"] == 0  # 未探测
 
@@ -84,9 +85,8 @@ async def test_invalid_execution_mode_skips(monkeypatch: pytest.MonkeyPatch) -> 
         raise AssertionError("should not probe")
 
     monkeypatch.setattr(lp, "probe_llm_endpoint", _fake_probe)
-    _patch_settings(monkeypatch, {"execution_mode": "bogus-value"})
 
-    result = await lp.ensure_llm_ready()
+    result = await lp.ensure_llm_ready(read_settings_async=_settings_reader({"execution_mode": "bogus-value"}))
     assert result is True
 
 
@@ -104,9 +104,8 @@ async def test_exclusive_mode_llm_reachable_no_switch(monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(lp, "probe_llm_endpoint", _fake_probe)
     monkeypatch.setattr(lp, "ensure_env", _fake_ensure_env)
-    _patch_settings(monkeypatch, {"execution_mode": "exclusive"})
 
-    result = await lp.ensure_llm_ready()
+    result = await lp.ensure_llm_ready(read_settings_async=_settings_reader({"execution_mode": "exclusive"}))
     assert result is True
     assert switched["n"] == 0  # 不切换
 
@@ -125,13 +124,20 @@ async def test_exclusive_mode_unreachable_triggers_switch(monkeypatch: pytest.Mo
     async def _fake_ensure_env(target, **kwargs):
         calls["switch"] += 1
 
+    def _fake_resolve(env: str):
+        async def _resolve(*args, **kwargs) -> str:
+            return env
+
+        return _resolve
+
     monkeypatch.setattr(lp, "probe_llm_endpoint", _fake_probe)
     monkeypatch.setattr(lp, "ensure_env", _fake_ensure_env)
-    monkeypatch.setattr(lp, "resolve_text_env_async", lambda: _fake_resolve("nsfw"))
     monkeypatch.setattr(lp, "read_current_host_env", lambda p: "image-qwen21")
-    _patch_settings(monkeypatch, {"execution_mode": "exclusive"})
 
-    result = await lp.ensure_llm_ready()
+    result = await lp.ensure_llm_ready(
+        read_settings_async=_settings_reader({"execution_mode": "exclusive"}),
+        resolve_text_env=_fake_resolve("nsfw"),
+    )
     assert result is True
     assert calls["probe"] == 2  # 切前探一次，切后探一次
     assert calls["switch"] == 1  # 切换一次
@@ -151,13 +157,20 @@ async def test_exclusive_mode_unreachable_at_target_env_does_not_switch(
     async def _fake_ensure_env(target, **kwargs):
         switched["n"] += 1
 
+    def _fake_resolve(env: str):
+        async def _resolve(*args, **kwargs) -> str:
+            return env
+
+        return _resolve
+
     monkeypatch.setattr(lp, "probe_llm_endpoint", _fake_probe)
     monkeypatch.setattr(lp, "ensure_env", _fake_ensure_env)
-    monkeypatch.setattr(lp, "resolve_text_env_async", lambda: _fake_resolve("nsfw"))
     monkeypatch.setattr(lp, "read_current_host_env", lambda p: "nsfw")  # 已在目标 env
-    _patch_settings(monkeypatch, {"execution_mode": "exclusive"})
 
-    result = await lp.ensure_llm_ready()
+    result = await lp.ensure_llm_ready(
+        read_settings_async=_settings_reader({"execution_mode": "exclusive"}),
+        resolve_text_env=_fake_resolve("nsfw"),
+    )
     assert result is False  # 已在目标 env 仍不可达 → 报错
     assert switched["n"] == 0  # 不切
 
@@ -173,19 +186,19 @@ async def test_ttl_cache_skips_probe(monkeypatch: pytest.MonkeyPatch) -> None:
         return True
 
     monkeypatch.setattr(lp, "probe_llm_endpoint", _fake_probe)
-    _patch_settings(monkeypatch, {"execution_mode": "exclusive"})
+    settings = _settings_reader({"execution_mode": "exclusive"})
 
     # 第一次探测 → 标记可达
-    assert await lp.ensure_llm_ready() is True
+    assert await lp.ensure_llm_ready(read_settings_async=settings) is True
     assert probed["n"] == 1
 
     # 第二次走 TTL 缓存 → 不再探测
-    assert await lp.ensure_llm_ready() is True
+    assert await lp.ensure_llm_ready(read_settings_async=settings) is True
     assert probed["n"] == 1  # 未增加
 
     # invalidate_cache 后再次探测
     lp.invalidate_cache()
-    assert await lp.ensure_llm_ready() is True
+    assert await lp.ensure_llm_ready(read_settings_async=settings) is True
     assert probed["n"] == 2
 
 
@@ -193,23 +206,30 @@ async def test_ttl_cache_skips_probe(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 async def test_resolve_text_env_prefers_episode_plan(monkeypatch: pytest.MonkeyPatch) -> None:
-    _patch_settings(monkeypatch, {"env_mapping": '{"episode_plan": "wide"}'})
-    assert await lp.resolve_text_env_async() == "wide"
+    assert (
+        await lp.resolve_text_env_async(
+            read_settings_async=_settings_reader({"env_mapping": '{"episode_plan": "wide"}'})
+        )
+        == "wide"
+    )
 
 
 async def test_resolve_text_env_falls_back_to_script_plan_content(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _patch_settings(monkeypatch, {"env_mapping": '{"script_plan_content": "novel"}'})
-    assert await lp.resolve_text_env_async() == "novel"
+    assert (
+        await lp.resolve_text_env_async(
+            read_settings_async=_settings_reader({"env_mapping": '{"script_plan_content": "novel"}'})
+        )
+        == "novel"
+    )
 
 
 async def test_resolve_text_env_falls_back_to_default_when_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _patch_settings(monkeypatch, {"env_mapping": ""})
     # 空 env_mapping 走 DEFAULT_ENV_MAPPING，episode_plan=nsfw
-    assert await lp.resolve_text_env_async() == "nsfw"
+    assert await lp.resolve_text_env_async(read_settings_async=_settings_reader({"env_mapping": ""})) == "nsfw"
 
 
 # ---- LLMUnreachableError --------------------------------------------------------
@@ -226,10 +246,3 @@ def test_llm_unreachable_error_message() -> None:
     assert "nsfw" in msg
     assert "image-qwen21" in msg
     assert "arcreel-env-gate.sh" in msg  # 给用户明确的修复命令
-
-
-# ---- helper -------------------------------------------------------------------
-
-
-async def _fake_resolve(env: str) -> str:
-    return env

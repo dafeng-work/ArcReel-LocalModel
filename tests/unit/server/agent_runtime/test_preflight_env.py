@@ -47,12 +47,16 @@ def _reset_module_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(pe, "DEFAULT_CURRENT_ENV_PATH", tmp_path / "current.env")
     monkeypatch.setattr(pe, "DEFAULT_LOG_DIR", tmp_path / "logs")
     monkeypatch.setattr(pe, "DEFAULT_GATE_SCRIPT", tmp_path / "arcreel-env-gate.sh")
-    # 替换 ready_probe 让测试环境不必真起 8080
-    async def _fake_probe_ready() -> bool:
+    return
+
+
+def _always_ready_probe() -> pe.ProbeReadyFn:
+    """测试用 ``probe_ready`` seam stub：默认就绪。"""
+
+    async def _stub() -> bool:
         return True
 
-    monkeypatch.setattr(pe, "_probe_ready", _fake_probe_ready)
-    yield
+    return _stub
 
 
 # ---- 已匹配：no-op -----------------------------------------------------
@@ -64,12 +68,13 @@ async def test_ensure_env_current_matches_target_is_noop(tmp_path: Path, monkeyp
     called = False
 
     async def _fake_exec(*args: Any, **kwargs: Any):
+        nonlocal called
         called = True
         return _StubProc(0)
 
     monkeypatch.setattr(pe.asyncio, "create_subprocess_exec", _fake_exec)
 
-    result = await pe.ensure_env("nsfw")
+    result = await pe.ensure_env("nsfw", probe_ready=_always_ready_probe())
     assert called is False
     assert result.switched is False
     assert result.target_env == "nsfw"
@@ -79,9 +84,7 @@ async def test_ensure_env_current_matches_target_is_noop(tmp_path: Path, monkeyp
 # ---- 未匹配：spawn 子进程成功 -------------------------------------------------
 
 
-async def test_ensure_env_spawns_gate_and_returns_result(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_ensure_env_spawns_gate_and_returns_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (tmp_path / "current.env").write_text("nsfw\n", encoding="utf-8")
     (tmp_path / "arcreel-env-gate.sh").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     (tmp_path / "arcreel-env-gate.sh").chmod(0o755)
@@ -96,7 +99,7 @@ async def test_ensure_env_spawns_gate_and_returns_result(
 
     monkeypatch.setattr(pe.asyncio, "create_subprocess_exec", _fake_exec)
 
-    result = await pe.ensure_env("video-ltx23-sulphur")
+    result = await pe.ensure_env("video-ltx23-sulphur", probe_ready=_always_ready_probe())
     assert result.switched is True
     assert result.target_env == "video-ltx23-sulphur"
 
@@ -114,7 +117,7 @@ async def test_ensure_env_gate_exit_nonzero_raises(tmp_path: Path, monkeypatch: 
     monkeypatch.setattr(pe.asyncio, "create_subprocess_exec", _fake_exec)
 
     with pytest.raises(pe.EnvSwitchFailed) as exc_info:
-        await pe.ensure_env("video-ltx23-sulphur")
+        await pe.ensure_env("video-ltx23-sulphur", probe_ready=_always_ready_probe())
     assert exc_info.value.target_env == "video-ltx23-sulphur"
     assert exc_info.value.exit_code == 3
     assert "gate failed" in exc_info.value.stderr_tail
@@ -124,14 +127,12 @@ async def test_ensure_env_gate_exit_nonzero_raises(tmp_path: Path, monkeypatch: 
 # ---- 子进程超时 → EnvSwitchTimeout + 子进程被 terminate/kill ----------------------
 
 
-async def test_ensure_env_subprocess_timeout_terminates_proc(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_ensure_env_subprocess_timeout_terminates_proc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (tmp_path / "current.env").write_text("nsfw\n", encoding="utf-8")
     (tmp_path / "arcreel-env-gate.sh").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
 
     class _HangingProc(_StubProc):
-        async def communicate(self):  # type: ignore[override]
+        async def communicate(self):
             await asyncio.sleep(60)
             return b"", b""
 
@@ -144,14 +145,14 @@ async def test_ensure_env_subprocess_timeout_terminates_proc(
     # 把 wait_for 缩短：让测试不必真等 155s
     real_wait_for = asyncio.wait_for
 
-    async def _short_wait_for(coro, timeout):
+    async def _short_wait_for(coro, timeout):  # noqa: ASYNC109 -- monkey-patched wait_for 必须保留 timeout 签名
         return await real_wait_for(coro, timeout=0.1)
 
     monkeypatch.setattr(pe.asyncio, "wait_for", _short_wait_for)
     monkeypatch.setattr(pe.asyncio, "create_subprocess_exec", _fake_exec)
 
     with pytest.raises(pe.EnvSwitchTimeout):
-        await pe.ensure_env("video-ltx23-sulphur", timeout_seconds=1.0)
+        await pe.ensure_env("video-ltx23-sulphur", timeout_seconds=1.0, probe_ready=_always_ready_probe())
 
 
 # ---- gate 脚本不存在 → EnvSwitchGateMissing -------------------------------------
@@ -162,15 +163,13 @@ async def test_ensure_env_gate_missing_raises(tmp_path: Path) -> None:
     # 不创建 arcreel-env-gate.sh
 
     with pytest.raises(pe.EnvSwitchGateMissing):
-        await pe.ensure_env("video-ltx23-sulphur")
+        await pe.ensure_env("video-ltx23-sulphur", probe_ready=_always_ready_probe())
 
 
 # ---- 并发互斥 -----------------------------------------------------------------
 
 
-async def test_ensure_env_concurrent_calls_serialized(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_ensure_env_concurrent_calls_serialized(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """两个并发 ensure_env 同 target：第二个一定等第一个完成。"""
 
     (tmp_path / "current.env").write_text("nsfw\n", encoding="utf-8")
@@ -188,8 +187,8 @@ async def test_ensure_env_concurrent_calls_serialized(
     monkeypatch.setattr(pe.asyncio, "create_subprocess_exec", _fake_exec)
 
     a, b = await asyncio.gather(
-        pe.ensure_env("video-ltx23-sulphur"),
-        pe.ensure_env("video-ltx23-sulphur"),
+        pe.ensure_env("video-ltx23-sulphur", probe_ready=_always_ready_probe()),
+        pe.ensure_env("video-ltx23-sulphur", probe_ready=_always_ready_probe()),
     )
     # 两次都成功（第二次命中 current 已是 target，不应再 spawn）
     # 注：第一次切完会把 current.env 改了，但 create_subprocess_exec 是 mock 不改 current.env。
@@ -208,15 +207,13 @@ async def test_ensure_env_rejects_empty_target() -> None:
     with pytest.raises(pe.EnvSwitchError, match="empty"):
         await pe.ensure_env("")
     with pytest.raises(pe.EnvSwitchError, match="empty"):
-        await pe.ensure_env("   ")
+        await pe.ensure_env("   ", probe_ready=_always_ready_probe())
 
 
 # ---- current.env 不存在视为 (unknown) → 强制切换 --------------------------------
 
 
-async def test_ensure_env_missing_current_env_forces_switch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_ensure_env_missing_current_env_forces_switch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # 不创建 current.env —— _read_current_host_env 应返回 (unknown)
     (tmp_path / "arcreel-env-gate.sh").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
 
@@ -225,5 +222,5 @@ async def test_ensure_env_missing_current_env_forces_switch(
 
     monkeypatch.setattr(pe.asyncio, "create_subprocess_exec", _fake_exec)
 
-    result = await pe.ensure_env("video-ltx23-sulphur")
+    result = await pe.ensure_env("video-ltx23-sulphur", probe_ready=_always_ready_probe())
     assert result.switched is True

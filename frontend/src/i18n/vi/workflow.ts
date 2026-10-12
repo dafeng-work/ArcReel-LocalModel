@@ -274,6 +274,7 @@ export default {
   'action_repair_video_units': 'sửa các đơn vị kịch bản được liệt kê bên dưới',
   'action_generate_videos': 'tạo các video còn thiếu',
   'action_patch_episode_script': 'sửa các trường kịch bản được liệt kê bên dưới',
+  'action_preflight_env_switch': 'chuyển môi trường host trước khi phân phối (khóa chéo GPU đơn)',
   'action_create_edit_timeline': 'tạo dòng thời gian dựng và giao cho Agent dựng',
   'action_retry_project_migration': 'sửa các tệp dự án được báo cáo rồi thử lại việc nâng cấp dữ liệu',
 

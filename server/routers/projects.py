@@ -936,13 +936,13 @@ async def workflow_preflight_dispatch(
 
     try:
         result = await ensure_env(target_env, timeout_seconds=timeout_seconds)
-    except EnvSwitchTimeout as exc:
+    except EnvSwitchTimeout:
         return WorkflowPreflightDispatchResponse(
             ok=False,
             error_code="env_switch_timeout",
             error_message=_t("env_switch_timeout"),
         )
-    except EnvSwitchFailed as exc:
+    except EnvSwitchFailed:
         return WorkflowPreflightDispatchResponse(
             ok=False,
             error_code="env_switch_failed",

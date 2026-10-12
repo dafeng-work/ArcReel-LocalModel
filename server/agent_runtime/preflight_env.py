@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import typing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -148,7 +149,7 @@ def read_current_host_env(current_env_path: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def _probe_ready() -> bool:
+async def _default_probe_ready() -> bool:
     """轮询 ``/v1/models`` 与 ``/system_stats``，任一 200 即视为后端就绪。"""
 
     client = get_http_client()
@@ -168,6 +169,14 @@ async def _probe_ready() -> bool:
     return False
 
 
+# 测试 / 调用方注入的 seam —— 形如 ``AwaitableCallable[[], bool]``。默认走
+# :func:`_default_probe_ready`；测试无需 monkey-patch 私有符号。
+ProbeReadyFn = typing.Callable[[], typing.Awaitable[bool]]
+
+#: 向后兼容：保留 ``_probe_ready`` 私有名以防现有调用方 / 旧式 monkey-patch 仍引用。
+_probe_ready = _default_probe_ready
+
+
 # ---------------------------------------------------------------------------
 # 主入口
 # ---------------------------------------------------------------------------
@@ -180,6 +189,7 @@ async def ensure_env(
     gate_script: Path | None = None,
     timeout_seconds: float | None = None,
     log_dir: Path | None = None,
+    probe_ready: ProbeReadyFn | None = None,
 ) -> EnvSwitchResult:
     """确保宿主 env 是 ``target_env``；不在则触发 ``arcreel-env-gate.sh`` 切换并等就绪。
 
@@ -262,8 +272,10 @@ async def ensure_env(
             )
 
         # env-gate 已 wait_ready —— 这里再补一道探测，吸收「env-gate 内部探测通过的瞬间 GPU
-        # 又被另一进程抢走」的边缘情况。
-        if not await _probe_ready():
+        # 又被另一进程抢走」的边缘情况。``probe_ready`` seam 让测试注入替代函数而不需
+        # monkey-patch 私有符号。
+        resolved_probe_ready = probe_ready if probe_ready is not None else globals()["_default_probe_ready"]
+        if not await resolved_probe_ready():
             raise EnvSwitchFailed(
                 target_env=target,
                 exit_code=2,

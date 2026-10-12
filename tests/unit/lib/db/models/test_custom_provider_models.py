@@ -31,6 +31,7 @@ class TestCustomProviderTable:
             "image_max_workers",
             "video_max_workers",
             "audio_max_workers",
+            "exclusive_resource_group",
             "created_at",
             "updated_at",
         }

@@ -17,7 +17,6 @@ from lib.config.dispatcher_schema import (
     validate_env_mapping,
 )
 
-
 # ---- list_available_envs --------------------------------------------------------
 
 
@@ -79,7 +78,8 @@ def test_parse_env_mapping_non_string_value_raises() -> None:
 
 
 def test_validate_env_mapping_accepts_known_step_and_known_env() -> None:
-    validate_env_mapping({"video": "video-ltx23-sulphur"}, available_envs=("video-ltx23-sulphur",))
+    # 合法 mapping 不抛异常，返回 None（避免破坏既有契约）。
+    assert validate_env_mapping({"video": "video-ltx23-sulphur"}, available_envs=("video-ltx23-sulphur",)) is None
 
 
 def test_validate_env_mapping_rejects_unknown_step() -> None:
@@ -93,7 +93,8 @@ def test_validate_env_mapping_rejects_unknown_env() -> None:
 
 
 def test_validate_env_mapping_empty_passes() -> None:
-    validate_env_mapping({}, available_envs=("nsfw",))
+    # 空 mapping 也合法（缺 key 不报错）：只是返回 None。
+    assert validate_env_mapping({}, available_envs=("nsfw",)) is None
 
 
 # ---- effective_env_mapping ------------------------------------------------------

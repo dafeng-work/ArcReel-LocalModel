@@ -87,9 +87,7 @@ _PREPROCESSORS: dict[tuple[str, str], str | None] = {
 }
 
 
-def _build_rule(
-    content_mode: str, generation_mode: str, env_map: dict[str, str] | None = None
-) -> WorkflowRule:
+def _build_rule(content_mode: str, generation_mode: str, env_map: dict[str, str] | None = None) -> WorkflowRule:
     applicable = set(_CONTENT_STEPS[content_mode])
     if generation_mode == "storyboard":
         applicable.add("storyboard")
@@ -117,9 +115,7 @@ WORKFLOW_RULES: dict[tuple[str, str], WorkflowRule] = {
 }
 
 
-def workflow_rule(
-    content_mode: str, generation_mode: str, *, env_map: dict[str, str] | None = None
-) -> WorkflowRule:
+def workflow_rule(content_mode: str, generation_mode: str, *, env_map: dict[str, str] | None = None) -> WorkflowRule:
     """Return the exhaustive rule for a validated project mode pair.
 
     ``env_map`` 是 G3 注入：把 step-id → env 名映射写进每一步的 ``required_env``。该参数只

@@ -134,7 +134,7 @@ describe("SystemConfigPage", () => {
       ["生成", ["供应商", "默认模型", "调用端点"]],
       ["Agent", ["ArcReel Agent", "Agent 记忆", "外部 Agent 接入", "访问令牌"]],
       [null, ["市场", "使用记录"]],
-      ["系统", ["通用", "提示词模版", "关于"]],
+      ["系统", ["通用", "执行模式", "提示词模版", "关于"]],
     ]);
     expect(within(nav).getByRole("link", { name: "供应商" })).toHaveAttribute("aria-current", "page");
   });

@@ -118,7 +118,8 @@ ID 参数时，前者传入，后者必须**省略该参数**，不得把 `[]` �
 | `generate_grid` | dispatch `generate-assets` 子智能体，调用 `mcp__arcreel__generate_grid`，不传 `scene_ids`（缺失即生成）；联合图就绪后经用户审阅同意，再调 `mcp__arcreel__split_grids` |
 | `repair_video_units` | `mcp__arcreel__get_episode_script` + `mcp__arcreel__patch_episode_script` 一次改完，再点名重做 |
 | `patch_episode_script` | 计划注入：`next_action.args` 已给 `base_revision` 与逐条 `problems`，一次批量改完 |
-| `confirm_request_duration` | 计划注入：见「整批准入判定」 |
+| `confirm_request_duration` | 计划注入：见「整批准入判定」
+| `preflight_env_switch` | 计划注入：在 dispatch 视频步骤（`generate_storyboards` / `generate_videos`）前，先 host 端调 `arcreel-env-gate.sh` 切到与 GPU env 匹配（单卡互斥），与 `execution_mode=exclusive` + `env_mapping` 共同决定；切失败抛 `env_switch_failed` / `env_switch_timeout` 阻断 dispatch | |
 | `generate_videos` | 视频生成工具（见 `generate-video` skill） |
 | `wait_for_task` | 计划注入：有活动任务，不入队新任务；等待并复查计划 |
 | `create_edit_timeline` | 本集视频已齐、还没有剪辑时间线：`mcp__arcreel__create_timeline`（`episode` 取 `next_action.args.episode_id`，`from: "script"`）按脚本机械新建一条，至少有一条剪辑时间线，「剪辑」一步即完成；之后按 `edit-video` skill 剪辑 |

@@ -7,9 +7,7 @@ env 切换本身（``/projects/{name}/workflow-dispatch``）已由单元测试�
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from unittest.mock import patch
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -39,9 +37,7 @@ def _build_app(session_factory, engine) -> FastAPI:
 
     app = FastAPI(lifespan=_lifespan)
     app.dependency_overrides[get_async_session] = _override_session
-    app.dependency_overrides[get_current_user] = lambda: CurrentUserInfo(
-        id="default", sub="testuser", role="admin"
-    )
+    app.dependency_overrides[get_current_user] = lambda: CurrentUserInfo(id="default", sub="testuser", role="admin")
     # 注册 UnprocessableError handler 把错误转 422，与生产 app.py 行为一致。
     from lib.infra.api_errors import UnprocessableError
 

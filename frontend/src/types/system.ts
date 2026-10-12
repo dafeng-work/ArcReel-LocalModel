@@ -140,23 +140,3 @@ export interface PreflightTestResponse {
   reason: string;
 }
 
-/** ``POST /projects/{name}/workflow-dispatch`` 的请求。 */
-export interface WorkflowPreflightDispatchRequest {
-  next_action: {
-    type: string;
-    args: Record<string, unknown>;
-    requested_ids?: string[];
-    requires_confirmation?: boolean;
-    reason?: string;
-  };
-}
-
-/** ``POST /projects/{name}/workflow-dispatch`` 的响应。 */
-export interface WorkflowPreflightDispatchResponse {
-  ok: boolean;
-  switched_to?: string | null;
-  elapsed_seconds?: number | null;
-  resume_action?: WorkflowPreflightDispatchRequest["next_action"] | null;
-  error_code?: string | null;
-  error_message?: string | null;
-}

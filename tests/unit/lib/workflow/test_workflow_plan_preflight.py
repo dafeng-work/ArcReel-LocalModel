@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from lib.workflow.workflow_plan import (
     PREFLIGHT_ENV_SWITCH_ETA_SECONDS,
     PREFLIGHT_ENV_SWITCH_TIMEOUT_SECONDS,
@@ -11,7 +9,6 @@ from lib.workflow.workflow_plan import (
 )
 from lib.workflow.workflow_state import WorkflowActionType
 from tests.unit.lib.workflow.test_workflow_plan import _status
-
 
 _DEFAULT_ENV_MAP = {
     "video": "video-ltx23-sulphur",
@@ -97,7 +94,6 @@ def test_exclusive_mode_with_empty_env_map_does_not_inject() -> None:
 def test_exclusive_mode_owner_not_video_does_not_inject() -> None:
     """owner 是其他 step（如 final_script）→ 该 step required_env 默认 nsfw → current 也
     是 nsfw → 不注入。覆盖"required_env 不匹配才注入"语义。"""
-    from lib.workflow.workflow_state import WorkflowStatus
 
     status = _status(action="generate_script")
     plan = build_workflow_plan(
@@ -113,7 +109,7 @@ def test_exclusive_mode_owner_not_video_does_not_inject() -> None:
 
 
 def test_exclusive_mode_with_none_next_action_does_not_inject() -> None:
-    from lib.workflow.workflow_state import WorkflowActionType, WorkflowNextAction, WorkflowStatus
+    from lib.workflow.workflow_state import WorkflowActionType, WorkflowNextAction
 
     status = _status(action="generate_videos")
     status.next_action = WorkflowNextAction(type=WorkflowActionType.NONE, reason="blocked")

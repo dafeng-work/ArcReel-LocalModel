@@ -171,9 +171,7 @@ def parse_execution_mode(raw: str) -> str:
         return "multi"
     if value in VALID_EXECUTION_MODES:
         return value
-    raise ValueError(
-        f"execution_mode {value!r} is not valid; expected one of {sorted(VALID_EXECUTION_MODES)}"
-    )
+    raise ValueError(f"execution_mode {value!r} is not valid; expected one of {sorted(VALID_EXECUTION_MODES)}")
 
 
 __all__ = [

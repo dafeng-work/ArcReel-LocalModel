@@ -323,6 +323,7 @@ git merge upstream/main  # 季度或按需，被动节奏
 ```python
 # 两个本地 ComfyUI provider 都打组
 from lib.db.repositories.custom_provider_repo import CustomProviderRepository
+
 repo = CustomProviderRepository(session)
 await repo.update_provider(1, exclusive_resource_group="gpu-local")
 await repo.update_provider(2, exclusive_resource_group="gpu-local")

@@ -86,8 +86,8 @@ class WorkflowPlanner:
         queue: GenerationQueue | None = None,
         config_resolver: ConfigResolver | None = None,
     ) -> WorkflowPlan:
-        from lib.db import async_session_factory as _default_async_session_factory
         from lib.config.service import ConfigService
+        from lib.db import async_session_factory as _default_async_session_factory
 
         queue = queue or get_generation_queue()
         status = await asyncio.to_thread(
@@ -102,7 +102,7 @@ class WorkflowPlanner:
             all_settings = await ConfigService(_session).get_all_settings()
         execution_mode = parse_execution_mode(all_settings.get("execution_mode", ""))
         env_map = effective_env_mapping(all_settings.get("env_mapping", ""))
-        current_host_env = read_current_host_env(DEFAULT_CURRENT_ENV_PATH) if DEFAULT_CURRENT_ENV_PATH is not None else None
+        current_host_env = read_current_host_env(DEFAULT_CURRENT_ENV_PATH)
 
         blocked = next((b for b in status.blockers if b.code == MIGRATION_FAILURE_CODE), None)
         if blocked is not None:

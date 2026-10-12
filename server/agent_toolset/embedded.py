@@ -53,12 +53,12 @@ async def _preflight_for_tool(tool_name: str) -> str | None:
 
     # 读 system_settings（execution_mode / env_mapping）。失败视为 multi，旁路。
     try:
-        from lib.db import async_session_factory
         from lib.config.service import ConfigService
+        from lib.db import async_session_factory
 
         async with async_session_factory() as session:
             all_settings = await ConfigService(session).get_all_settings()
-    except Exception as exc:  # noqa: BLE001 — 任何 db / 配置读失败都不应阻塞工具调用
+    except Exception as exc:
         logger.warning("preflight: failed to read system_settings for %s, skipping: %s", tool_name, exc)
         return None
 
@@ -87,7 +87,7 @@ async def _preflight_for_tool(tool_name: str) -> str | None:
     except EnvSwitchError as exc:
         logger.warning("preflight: ensure_env failed for %s: %s", tool_name, exc)
         return "env_switch_failed"
-    except Exception as exc:  # noqa: BLE001
+    except Exception:
         logger.exception("preflight: unexpected error in ensure_env for %s", tool_name)
         return "env_switch_failed"
     return None

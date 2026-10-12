@@ -446,9 +446,9 @@ class GenerationQueue:
         owner_key = f"{provider_id}:{media_type}"
         lease_name = f"group:{group}"
         async with self._session_factory() as session:
-            from lib.db.models.task import WorkerLease
             from sqlalchemy import update
-            from sqlalchemy.future import select
+
+            from lib.db.models.task import WorkerLease
 
             now_epoch = time.time()
             lease_until = now_epoch + self._GPU_RESOURCE_GROUP_LEASE_TTL
@@ -461,7 +461,7 @@ class GenerationQueue:
                 )
                 .values(owner_id=owner_key, lease_until=lease_until, updated_at=updated_at)
             )
-            if upd.rowcount and upd.rowcount > 0:
+            if upd.rowcount and upd.rowcount > 0:  # type: ignore[attr-defined]  # SQLAlchemy Row.rowcount 是方言属性，stub 类型不带；运行时由 dialect 提供
                 await session.commit()
                 return
             # 慢路径：插入新行
@@ -482,13 +482,12 @@ class GenerationQueue:
 
     async def _peek_group_lease_owner(self, lease_name: str) -> str | None:
         """诊断辅助：读 group 锁的当前 owner。"""
-        from lib.db.models.task import WorkerLease
         from sqlalchemy.future import select
 
+        from lib.db.models.task import WorkerLease
+
         async with self._session_factory() as session:
-            row = (
-                await session.execute(select(WorkerLease.owner_id).where(WorkerLease.name == lease_name))
-            ).first()
+            row = (await session.execute(select(WorkerLease.owner_id).where(WorkerLease.name == lease_name))).first()
         return row[0] if row else None
 
     @asynccontextmanager

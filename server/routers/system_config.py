@@ -34,7 +34,6 @@ from lib.backends.generation_type_buckets import (
 )
 from lib.backends.http_status_errors import raise_for_status_redacted
 from lib.config.dispatcher_schema import (
-    effective_env_mapping,
     list_available_envs,
     parse_env_mapping,
     parse_execution_mode,
@@ -50,13 +49,8 @@ from lib.infra.api_errors import UnprocessableError
 from lib.infra.httpx_shared import get_http_client
 from lib.market.sources import PROXY_PREFIX_SETTING
 from lib.speech.narration_config import parse_tts_backend
-from server.agent_runtime.preflight_env import (  # noqa: F401 — re-exported for workflow router reuse
+from server.agent_runtime.preflight_env import (
     DEFAULT_CURRENT_ENV_PATH,
-    EnvSwitchError,
-    EnvSwitchFailed,
-    EnvSwitchGateMissing,
-    EnvSwitchTimeout,
-    ensure_env,
 )
 from server.dependencies import get_config_service
 from server.i18n import Locale, Translator

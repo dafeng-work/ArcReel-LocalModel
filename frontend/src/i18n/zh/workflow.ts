@@ -274,6 +274,7 @@ export default {
   'action_repair_video_units': '修正下面列出的脚本单元',
   'action_generate_videos': '生成缺失的视频',
   'action_patch_episode_script': '修正下面列出的脚本字段',
+  'action_preflight_env_switch': '分发前切换宿主环境（单机互斥）',
   'action_create_edit_timeline': '新建剪辑时间线并交给 Agent 剪辑',
   'action_retry_project_migration': '修复报告的项目文件后重试数据升级',
 

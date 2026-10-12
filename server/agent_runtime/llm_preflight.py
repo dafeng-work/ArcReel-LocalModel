@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import time
+import typing
 from typing import Any
 
 import httpx
@@ -32,7 +33,7 @@ from server.agent_runtime.preflight_env import (
 logger = logging.getLogger(__name__)
 
 
-async def _read_settings_async() -> dict[str, str]:
+async def _default_read_settings_async() -> dict[str, str]:
     """读 system_settings 全量映射；失败返回空 dict（视同 multi 模式）。"""
 
     try:
@@ -44,6 +45,13 @@ async def _read_settings_async() -> dict[str, str]:
     except Exception as exc:
         logger.warning("llm_preflight: failed to read system_settings: %s", exc)
         return {}
+
+
+#: 测试 / 调用方注入的 seam —— 形如 ``AwaitableCallable[[], dict[str, str]]``。
+ReadSettingsAsyncFn = "typing.Callable[[], typing.Awaitable[dict[str, str]]]"
+
+#: 向后兼容：保留 ``_read_settings_async`` 私有名以防现有调用方仍引用。
+_read_settings_async = _default_read_settings_async
 
 
 #: LLM 端点探测 URL。`r9700-gateway:8080` 是 LLM 统一入口，llama-server 经它暴露
@@ -120,10 +128,15 @@ async def _probe_with_client(client: Any, url: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-async def resolve_text_env_async() -> str:
+async def resolve_text_env_async(
+    read_settings_async: typing.Callable[[], typing.Awaitable[dict[str, str]]] | None = None,
+) -> str:
     """异步解析文本 env（从 system_settings 读 env_mapping）。"""
 
-    all_settings = await _read_settings_async()
+    resolved_read_settings = (
+        read_settings_async if read_settings_async is not None else globals()["_default_read_settings_async"]
+    )
+    all_settings = await resolved_read_settings()
     try:
         env_mapping = effective_env_mapping(all_settings.get("env_mapping", ""))
     except Exception as exc:
@@ -141,6 +154,8 @@ async def ensure_llm_ready(
     *,
     probe_url: str = DEFAULT_LLM_PROBE_URL,
     use_ttl_cache: bool = True,
+    read_settings_async: typing.Callable[[], typing.Awaitable[dict[str, str]]] | None = None,
+    resolve_text_env: typing.Callable[..., typing.Awaitable[str]] | None = None,
 ) -> bool:
     """确保 LLM 端点可达；不可达则切到文本 env 后再探一次。
 
@@ -153,7 +168,10 @@ async def ensure_llm_ready(
     """
 
     # 读 execution_mode：非 exclusive 直接放行（multi 模式零开销）
-    all_settings = await _read_settings_async()
+    resolved_read_settings = (
+        read_settings_async if read_settings_async is not None else globals()["_default_read_settings_async"]
+    )
+    all_settings = await resolved_read_settings()
     try:
         execution_mode = parse_execution_mode(all_settings.get("execution_mode", ""))
     except Exception as exc:
@@ -172,7 +190,8 @@ async def ensure_llm_ready(
         return True
 
     # 2) 不可达 → 解析文本 env → 切换
-    target_env = await resolve_text_env_async()
+    resolved_resolve = resolve_text_env if resolve_text_env is not None else globals()["resolve_text_env_async"]
+    target_env = await resolved_resolve(read_settings_async=resolved_read_settings)
     current_env = read_current_host_env(DEFAULT_CURRENT_ENV_PATH)
 
     if current_env == target_env:
