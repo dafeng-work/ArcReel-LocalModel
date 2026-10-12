@@ -394,6 +394,10 @@ class GenerationQueue:
     #   * 仅 image / video lane 参与 G1 锁；text / audio 走原并发路径。
     #   * provider.exclusive_resource_group 非空时，提交任务前抢 group 名下的 worker_lease
     #     行（`name = "group:<group>"`），与同 group 的其它 provider 互斥串行。
+    #   * owner = `provider_id:media_type`：合并 provider 后（同 provider 多 endpoint），
+    #     同 provider 同媒体类型可续约；同 provider 跨媒体类型（image vs video）必须互斥，
+    #     否则合并后的 gateway provider 会让 image 与 video 并发抢同一张卡。
+    #     跨 provider 同 group 互斥；跨 group 不互斥。
     #   * 入队后**不**主动释放——靠 lease_until（600s，video 任务最长也跑不完）自然过期。
     #     下一个 task 入队时会因 lease 未过期而抢不到，自然串行；这是单卡单 worker 场景下
     #     最简且贴合实际的释放策略。
@@ -437,7 +441,9 @@ class GenerationQueue:
         if not group:
             return
 
-        # 抢锁（用 provider_id 作 owner：同 provider 多任务可续约，跨 provider 同 group 互斥）
+        # owner 用 provider_id:media_type：同 provider 同媒体类型可续约；跨媒体类型（image vs video）
+        # 或跨 provider 同 group 都视为互斥（r9700-gateway 合并 provider 后的关键修复）。
+        owner_key = f"{provider_id}:{media_type}"
         lease_name = f"group:{group}"
         async with self._session_factory() as session:
             from lib.db.models.task import WorkerLease
@@ -451,9 +457,9 @@ class GenerationQueue:
                 update(WorkerLease)
                 .where(
                     WorkerLease.name == lease_name,
-                    (WorkerLease.owner_id == provider_id) | (WorkerLease.lease_until <= now_epoch),
+                    (WorkerLease.owner_id == owner_key) | (WorkerLease.lease_until <= now_epoch),
                 )
-                .values(owner_id=provider_id, lease_until=lease_until, updated_at=updated_at)
+                .values(owner_id=owner_key, lease_until=lease_until, updated_at=updated_at)
             )
             if upd.rowcount and upd.rowcount > 0:
                 await session.commit()
@@ -461,7 +467,7 @@ class GenerationQueue:
             # 慢路径：插入新行
             lease = WorkerLease(
                 name=lease_name,
-                owner_id=provider_id,
+                owner_id=owner_key,
                 lease_until=lease_until,
                 updated_at=updated_at,
             )
@@ -470,7 +476,7 @@ class GenerationQueue:
                 await session.commit()
             except IntegrityError:
                 await session.rollback()
-                # 其它 provider 持锁未过期
+                # 其它 owner（跨 provider 或同 provider 跨媒体类型）持锁未过期
                 held_by = await self._peek_group_lease_owner(lease_name)
                 raise ResourceGroupBusy(group=group, held_by=held_by) from None
 

@@ -77,3 +77,93 @@ class TestG1MediaScope:
         method_source = GenerationQueue._enforce_gpu_resource_group_lock
         # 调用签名应含 task_type 参数（用于 video/reference_video 判别）
         assert "task_type" in method_source.__code__.co_varnames
+
+
+class TestG1OwnerByProviderAndMediaType:
+    """G1 owner = provider_id:media_type。
+
+    - 同 provider 同 media_type 续约不抛（同一图像/视频 lane 内部可并发提交）。
+    - 同 provider 跨 media_type 互斥（image vs video 必须串行，避免合并 provider 后撞卡）。
+    - 跨 provider 同 group 仍互斥。
+    """
+
+    async def _make_provider_with_group(self, db_session, name: str, group: str) -> int:
+        from lib.db.repositories.custom_provider_repo import CustomProviderRepository
+
+        repo = CustomProviderRepository(db_session)
+        provider = await repo.create_provider(
+            display_name=name,
+            discovery_format="openai",
+            base_url="http://127.0.0.1:8189",
+            api_key="",
+        )
+        await db_session.flush()
+        await repo.update_provider(provider.id, exclusive_resource_group=group)
+        await db_session.flush()
+        return provider.id
+
+    async def test_same_provider_same_media_type_can_extend(
+        self, db_engine
+    ) -> None:
+        from sqlalchemy.ext.asyncio import async_sessionmaker
+
+        from lib.db.repositories.custom_provider_repo import CustomProviderRepository
+        from lib.generation.generation_queue import GenerationQueue
+
+        factory = async_sessionmaker(db_engine, expire_on_commit=False)
+        async with factory() as s:
+            repo = CustomProviderRepository(s)
+            provider = await repo.create_provider(
+                display_name="p1",
+                discovery_format="openai",
+                base_url="http://127.0.0.1:8189",
+                api_key="",
+            )
+            await s.flush()
+            await repo.update_provider(provider.id, exclusive_resource_group="gpu-local")
+            await s.commit()
+            db_id = provider.id
+
+        queue = GenerationQueue(session_factory=factory)
+        # 同 provider 同 media_type 续约：必须不抛
+        await queue._enforce_gpu_resource_group_lock(
+            provider_id=f"custom-{db_id}", media_type="image", task_type="image"
+        )
+        await queue._enforce_gpu_resource_group_lock(
+            provider_id=f"custom-{db_id}", media_type="image", task_type="image"
+        )
+
+    async def test_same_provider_cross_media_type_is_busy(
+        self, db_engine
+    ) -> None:
+        from sqlalchemy.ext.asyncio import async_sessionmaker
+
+        from lib.db.repositories.custom_provider_repo import CustomProviderRepository
+        from lib.generation.generation_queue import GenerationQueue
+
+        factory = async_sessionmaker(db_engine, expire_on_commit=False)
+        async with factory() as s:
+            repo = CustomProviderRepository(s)
+            provider = await repo.create_provider(
+                display_name="p2",
+                discovery_format="openai",
+                base_url="http://127.0.0.1:8189",
+                api_key="",
+            )
+            await s.flush()
+            await repo.update_provider(provider.id, exclusive_resource_group="gpu-local")
+            await s.commit()
+            db_id = provider.id
+
+        queue = GenerationQueue(session_factory=factory)
+        await queue._enforce_gpu_resource_group_lock(
+            provider_id=f"custom-{db_id}", media_type="image", task_type="image"
+        )
+        # 同 provider 跨 media_type（合并后 r9700-gateway provider 必填）
+        with pytest.raises(ResourceGroupBusy) as ei:
+            await queue._enforce_gpu_resource_group_lock(
+                provider_id=f"custom-{db_id}", media_type="video", task_type="video"
+            )
+        assert ei.value.group == "gpu-local"
+        # held_by 是先抢到锁的 owner_key（image 占锁），应是 'custom-<id>:image'
+        assert "image" in (ei.value.held_by or "")
