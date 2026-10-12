@@ -45,6 +45,7 @@ import type {
   PromptTemplatePartial,
   ModelCandidatesResponse,
   OnboardingStatus,
+  PreflightTestResponse,
   SystemConfigPatch,
   ApiKeyInfo,
   CreateApiKeyResponse,
@@ -470,6 +471,15 @@ class API {
     return this.request("/system/config", {
       method: "PATCH",
       body: JSON.stringify(patch),
+    });
+  }
+
+  static async testPreflight(
+    payload: { target_env?: string | null } = {},
+  ): Promise<PreflightTestResponse> {
+    return this.request("/system/config/test-preflight", {
+      method: "POST",
+      body: JSON.stringify(payload),
     });
   }
 

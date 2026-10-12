@@ -51,6 +51,7 @@ export const WORKFLOW_ACTION_TYPES = [
   "create_edit_timeline",
   "retry_project_migration",
   "patch_episode_script",
+  "preflight_env_switch",
   "retry",
   "fix_input",
   "generate_dependency",

@@ -22,6 +22,8 @@ export const SETTINGS_SECTIONS = [
   "general",
   "prompt-templates",
   "about",
+  // G3 单机单卡互斥适配：执行模式 + env 映射
+  "execution-mode",
 ] as const;
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 

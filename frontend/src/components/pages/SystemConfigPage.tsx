@@ -34,6 +34,7 @@ import { AccessTokensSection } from "./settings/agent-access/AccessTokensSection
 import { ExternalAgentSection } from "./settings/agent-access/ExternalAgentSection";
 import { ConfigIssueNotice } from "./settings/ConfigIssueNotice";
 import { EndpointsSection } from "./settings/endpoints/EndpointsSection";
+import { ExecutionModePage } from "./settings/ExecutionModePage";
 import { GeneralSection } from "./settings/GeneralSection";
 import { MarketSection } from "./settings/market/MarketSection";
 import { MediaModelSection } from "./settings/MediaModelSection";
@@ -56,6 +57,7 @@ const SECTIONS: Record<SettingsSection, SectionDef> = {
   market: { labelKey: "dashboard:market_section_title", icon: Store, tier: "full" },
   usage: { labelKey: "dashboard:usage", icon: BarChart3, tier: "full" },
   general: { labelKey: "dashboard:settings_general", icon: SlidersHorizontal, tier: "constrained" },
+  "execution-mode": { labelKey: "dashboard:execution_mode_section_title", icon: SlidersHorizontal, tier: "constrained" },
   "prompt-templates": { labelKey: "dashboard:prompt_templates", icon: ScrollText, tier: "constrained" },
   about: { labelKey: "dashboard:about", icon: Info, tier: "constrained" },
 };
@@ -69,7 +71,7 @@ const SECTION_GROUPS: { id: string; labelKey?: string; sections: SettingsSection
     sections: ["arcreel-agent", "agent-memory", "external-agent", "access-tokens"],
   },
   { id: "standalone", sections: ["market", "usage"] },
-  { id: "system", labelKey: "dashboard:settings_group_system", sections: ["general", "prompt-templates", "about"] },
+  { id: "system", labelKey: "dashboard:settings_group_system", sections: ["general", "execution-mode", "prompt-templates", "about"] },
 ];
 
 /** 引导第 4、5 步指向的侧栏入口。 */
@@ -163,6 +165,8 @@ function SectionContent({ section }: { section: SettingsSection }) {
       return <UsageRecordsSection />;
     case "general":
       return <GeneralSection />;
+    case "execution-mode":
+      return <ExecutionModePage />;
     case "prompt-templates":
       return <PromptTemplatesSection />;
     case "about":

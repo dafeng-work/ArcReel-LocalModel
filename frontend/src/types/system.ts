@@ -24,6 +24,10 @@ export interface SystemConfigSettings {
   agent_max_concurrent_sessions: number;
   /** 市场源 GitHub raw 代理前缀；空串即直连。 */
   market_github_proxy_prefix?: string;
+  /** G3 单机单卡互斥适配：执行模式。"multi" 与上游 ArcReel 一致；"exclusive" 启用工作流步骤级 env 前置闸门。 */
+  execution_mode?: "multi" | "exclusive";
+  /** G3：step-id → 宿主机 env 名映射的 JSON 字符串；空串 = 用 lib.config.dispatcher_schema 的默认 mapping。 */
+  env_mapping?: string;
 }
 
 export interface SystemConfigOptions {
@@ -34,6 +38,10 @@ export interface SystemConfigOptions {
   provider_names?: Record<string, string>;
   /** "provider_id/model_id" → 按 Accept-Language 成文的模型名；缺键即退回 model id。 */
   model_names?: Record<string, string>;
+  /** G3：宿主机上可用的 env 名集合（扫描 /home/dafeng/ai-stack/env/*.env）。 */
+  available_envs?: string[];
+  /** G3：当前宿主 env 名（读 run/current.env；读不到为 null）。 */
+  current_host_env?: string | null;
 }
 
 /** 新建 TTS 项目的预填值；未配置任何音频供应商时 audio_backend 为 null。 */
@@ -117,4 +125,38 @@ export interface SystemConfigPatch {
   agent_session_cleanup_delay_seconds?: number;
   agent_max_concurrent_sessions?: number;
   market_github_proxy_prefix?: string;
+  /** G3：执行模式。"multi"（默认，零回归）/ "exclusive"（启用 preflight）。 */
+  execution_mode?: "multi" | "exclusive";
+  /** G3：env_mapping 字符串（空串表示用默认）。 */
+  env_mapping?: string;
+}
+
+/** ``POST /system/config/test-preflight`` 的响应。 */
+export interface PreflightTestResponse {
+  current_host_env: string | null;
+  available_envs: string[];
+  target_env: string | null;
+  would_switch: boolean;
+  reason: string;
+}
+
+/** ``POST /projects/{name}/workflow-dispatch`` 的请求。 */
+export interface WorkflowPreflightDispatchRequest {
+  next_action: {
+    type: string;
+    args: Record<string, unknown>;
+    requested_ids?: string[];
+    requires_confirmation?: boolean;
+    reason?: string;
+  };
+}
+
+/** ``POST /projects/{name}/workflow-dispatch`` 的响应。 */
+export interface WorkflowPreflightDispatchResponse {
+  ok: boolean;
+  switched_to?: string | null;
+  elapsed_seconds?: number | null;
+  resume_action?: WorkflowPreflightDispatchRequest["next_action"] | null;
+  error_code?: string | null;
+  error_message?: string | null;
 }
