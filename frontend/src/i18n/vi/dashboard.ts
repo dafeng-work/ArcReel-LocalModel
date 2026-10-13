@@ -2972,7 +2972,11 @@ export default {
   'episode_planning_busy': 'Đang lập kế hoạch tập. Hãy đợi hoàn tất hoặc dừng lại rồi gửi lại.',
   'episode_planning_failed': 'Lần lập kế hoạch trước chưa hoàn tất: {{reason}}',
   'text_output_truncated_switch_model': 'Không thể thay đổi độ dài đầu ra tối đa của mô hình tích hợp sẵn. Hãy đổi sang mô hình văn bản khác trong phần Cài đặt rồi thử lại.',
+  // G4 cổng kiểm tra env của mô hình văn bản
+  'text_env_switch_required_detail': "Máy đang chạy '{{currentEnv}}' nhưng mô hình văn bản này cần '{{targetEnv}}'; còn {{count}} tác vụ GPU đang chạy và chuyển sẽ làm gián đoạn chúng. Hãy đợi chạy xong rồi chạy lệnh bên dưới.",
+  'text_provider_unavailable_detail': '{{provider}}/{{model}} trả về {{status}} từ phía upstream. Trên máy đơn GPU, điều này thường do env đang hoạt động không phải env phục vụ mô hình này — hãy kiểm tra run/current.env trên máy.',
   'text_output_truncated_register_limit': 'Đặt độ dài đầu ra tối đa',
+  'text_provider_unavailable_open_settings': 'Kiểm tra ràng buộc env của nhà cung cấp',
   'episode_planning_done': 'Toàn bộ văn bản nguồn đã được phân tập',
   'episode_planning_done_with_gaps': 'Đã lập kế hoạch đến cuối toàn bộ văn bản nguồn, ở giữa vẫn còn nguyên văn chưa chia',
   'episode_planning_stats_count': 'Số tập',

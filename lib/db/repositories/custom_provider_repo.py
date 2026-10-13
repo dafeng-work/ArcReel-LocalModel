@@ -62,6 +62,7 @@ class CustomProviderRepository(BaseRepository):
         image_max_workers: int | None = None,
         video_max_workers: int | None = None,
         audio_max_workers: int | None = None,
+        env_name: str | None = None,
     ) -> CustomProvider:
         """创建供应商，可选同时创建模型列表。"""
         provider = CustomProvider(
@@ -72,6 +73,7 @@ class CustomProviderRepository(BaseRepository):
             image_max_workers=image_max_workers,
             video_max_workers=video_max_workers,
             audio_max_workers=audio_max_workers,
+            env_name=env_name,
         )
         self.session.add(provider)
         await self.session.flush()  # 获取 provider.id
@@ -113,6 +115,17 @@ class CustomProviderRepository(BaseRepository):
         if provider is None:
             return None
         return provider.exclusive_resource_group
+
+    async def get_env_name(self, provider_id: int) -> str | None:
+        """读 provider 的 env_name 字段（G4：文本 env 前置闸门）。
+
+        非空时，本 provider 由宿主该 env 提供：发文本请求前先确认宿主 `run/current.env` 与此
+        一致。返回 None 即不感知 env，调用方直接旁路预检——这是未启用本特性的部署的默认行为。
+        """
+        provider = await self.get_provider(provider_id)
+        if provider is None:
+            return None
+        return provider.env_name
 
     async def delete_provider(self, provider_id: int) -> None:
         """删除供应商及其所有模型。

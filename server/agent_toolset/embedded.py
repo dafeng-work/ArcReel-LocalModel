@@ -18,13 +18,13 @@ from mcp import types
 from mcp.server import Server
 
 from lib.config.dispatcher_schema import effective_env_mapping, parse_execution_mode
-from lib.workflow.tool_step_env import step_for_tool
-from server.agent_runtime.preflight_env import (
+from lib.infra.env_preflight import (
     DEFAULT_CURRENT_ENV_PATH,
     EnvSwitchError,
     ensure_env,
     read_current_host_env,
 )
+from lib.workflow.tool_step_env import step_for_tool
 from server.agent_toolset.declaration import (
     AgentToolDeclaration,
     UnscopedToolDeclaration,

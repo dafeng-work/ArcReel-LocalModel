@@ -178,6 +178,10 @@ MESSAGES = {
     "env_switch_timeout": "env 切换超时（新模型未在 deadline 内就绪）；请查看 arcreel-env-gate.sh 日志",
     "env_switch_failed": "env 切换失败（arcreel-env-gate.sh 退出码非零或 ready 探测始终非 2xx）；stderr 末尾见服务端日志",
     "workflow_dispatch_action_not_preflight": "workflow-dispatch 端点只接受 PREFLIGHT_ENV_SWITCH 类型的 next_action",
+    # G4 文本模型 env 前置闸门
+    "invalid_env_name": "「{name}」不是本机存在的 env；可用：{available}",
+    "text_env_switch_required": "该文本模型需要 env「{target_env}」，但宿主当前运行在「{current_env}」，且还有 {count} 个 GPU 任务在跑。现在切换会打断它们——请等任务跑完，或手动切换：arcreel-env-gate.sh {target_env} -- true",
+    "text_provider_unavailable": "文本模型 {provider}/{model} 不可用（网关返回 {status}）；本机单卡下通常是当前 env 不是该模型所属 env。请检查宿主 run/current.env，或在「全局设置 → 供应商」中检查该供应商的 env 绑定",
     "speech_rate_out_of_range": "语速需在 {min} 到 {max} 之间（字或词/秒）",
     "episode_target_duration_out_of_range": "单集目标时长需在 {min} 到 {max} 秒之间",
     "character_not_found": "角色「{name}」不存在",

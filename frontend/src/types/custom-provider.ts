@@ -52,6 +52,11 @@ export interface CustomProviderInfo {
   image_max_workers: number | null;
   video_max_workers: number | null;
   audio_max_workers: number | null;
+  /**
+   * 本 provider 由宿主该 env 提供；null = 不感知 env（文本调用前不做 env 前置闸门）。
+   * 只对本机单卡多模型互斥部署有意义，远端供应商恒为 null。
+   */
+  env_name: string | null;
 }
 
 export interface CustomProviderModelInfo {
@@ -124,6 +129,8 @@ export interface CustomProviderCreateRequest {
   image_max_workers?: number | null;
   video_max_workers?: number | null;
   audio_max_workers?: number | null;
+  /** 本 provider 绑定的宿主 env 名；省略或 null = 不感知 env。 */
+  env_name?: string | null;
 }
 
 export interface CustomProviderFullUpdateRequest {
@@ -136,6 +143,8 @@ export interface CustomProviderFullUpdateRequest {
   image_max_workers: number | null;
   video_max_workers: number | null;
   audio_max_workers: number | null;
+  /** 同上：PUT 为 env 绑定的权威来源，null 即清除。 */
+  env_name?: string | null;
 }
 
 export interface CustomProviderModelInput {

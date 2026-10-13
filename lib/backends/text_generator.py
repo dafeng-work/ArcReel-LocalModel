@@ -19,6 +19,12 @@ from lib.backends.text_backends.base import (
     TextTaskType,
 )
 from lib.backends.text_backends.factory import create_text_backend_for_task, text_model_output_limit
+from lib.backends.text_env_gate import (
+    TextProviderUnavailableError,
+    ensure_text_provider_env,
+    is_definite_upstream_unavailable,
+    is_loopback_base_url,
+)
 from lib.billing.ledger import Ledger
 from lib.db.base import DEFAULT_USER_ID
 
@@ -87,6 +93,10 @@ class TextGenerator:
         同一个 ``task_type`` 会服务多种来源（剧本生成与分集规划都走 SCRIPT）。
         """
         backend, provider_id = await create_text_backend_for_task(task_type, project_name)
+        # G4：发请求前确认宿主 env 与该 provider 绑定的 env 一致。本机单卡多模型互斥部署下，
+        # 文本模型由某个 env 独占提供；env 不对时端口无监听、网关必 502，重试只是白等。
+        # `custom_provider.env_name` 为 NULL（默认）时整段旁路，未启用该特性的部署零回归。
+        await ensure_text_provider_env(provider_id)
         limit = await text_model_output_limit(provider_id, backend.model)
         return cls(
             backend,
@@ -129,10 +139,30 @@ class TextGenerator:
                 result = await self.backend.generate(request)
             except TextOutputTruncatedError as exc:
                 raise self._truncation(exc.provider, exc.output_tokens) from exc
+            except Exception as exc:
+                # G4：上游明确不可达时翻译成带排查指引的问题票，而不是让路由层兜底成
+                # 「服务器内部错误」。只在回环端点上翻译——远端供应商的 5xx 可能是瞬时抖动，
+                # 不属于该类则原样上抛，绝不吞掉真实缺陷。
+                unavailable = self._maybe_provider_unavailable(exc)
+                if unavailable is None:
+                    raise
+                raise unavailable from exc
             if result.truncated and require_complete:
                 raise self._truncation(result.provider, result.output_tokens)
             call.success(result)
             return result
+
+    def _maybe_provider_unavailable(self, exc: BaseException) -> TextProviderUnavailableError | None:
+        """判定失败是否属于「本机网关上游不可达」；不是则返回 None 让调用方原样上抛。"""
+        base_url = getattr(self.backend, "base_url", None)
+        if not is_loopback_base_url(base_url) or not is_definite_upstream_unavailable(exc):
+            return None
+        return TextProviderUnavailableError(
+            provider_id=self._provider_id,
+            model=self.backend.model,
+            upstream_status=getattr(exc, "status_code", None),
+            reason=type(exc).__name__,
+        )
 
     def _truncation(self, provider: str, output_tokens: int | None) -> TextOutputTruncatedError:
         return TextOutputTruncatedError(

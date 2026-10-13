@@ -377,6 +377,56 @@ describe("OverviewCanvas", () => {
     expect(screen.getByRole("textbox", { name: "梗概" })).toBeInTheDocument();
   });
 
+  it("names the env switch command when GPU tasks block switching to the text env", async () => {
+    // 有在跑 GPU 作业 → 不自动切 env，给出当前/目标 env 与可照做的切换命令
+    const user = userEvent.setup();
+    vi.spyOn(API, "generateOverview").mockRejectedValue(
+      new ApiRequestError(
+        "env busy",
+        {
+          code: "text_env_switch_required",
+          params: { current_env: "video-ltx23-dev", target_env: "wide", count: 2 },
+        },
+        422,
+      ),
+    );
+    renderOverview({
+      projectData: makeProjectData({ ...EMPTY_PROJECT, whole_source_files: [{ source_file: "source/novel.txt" }] }),
+    });
+
+    await user.click(screen.getByRole("button", { name: "从原文生成" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("video-ltx23-dev");
+    expect(alert).toHaveTextContent("wide");
+    expect(alert).toHaveTextContent("arcreel-env-gate.sh wide -- true");
+  });
+
+  it("shows the upstream status and a settings link when the local gateway is down", async () => {
+    // 网关 502 不该再显示成「服务器内部错误」——要显示上游状态并给出去查 env 绑定的出路
+    const user = userEvent.setup();
+    vi.spyOn(API, "generateOverview").mockRejectedValue(
+      new ApiRequestError(
+        "gateway down",
+        {
+          code: "text_provider_unavailable",
+          params: { provider: "custom-4", model: "qwen-wide", status: 502 },
+        },
+        422,
+      ),
+    );
+    renderOverview({
+      projectData: makeProjectData({ ...EMPTY_PROJECT, whole_source_files: [{ source_file: "source/novel.txt" }] }),
+    });
+
+    await user.click(screen.getByRole("button", { name: "从原文生成" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("502");
+    expect(alert).not.toHaveTextContent("服务器内部错误");
+    expect(within(alert).getByRole("link", { name: "去检查供应商的 env 绑定" })).toBeInTheDocument();
+  });
+
   it("says the story setting was generated when only the follow-up refresh fails", async () => {
     const user = userEvent.setup();
     vi.spyOn(API, "generateOverview").mockResolvedValue({ success: true, overview: {} as never });

@@ -60,6 +60,7 @@ function customFor(lang: string): { providers: CustomProviderInfo[] } {
         image_max_workers: null,
         video_max_workers: null,
         audio_max_workers: null,
+        env_name: null,
       },
     ],
   };
@@ -129,6 +130,7 @@ function customProvider(id: number, displayName: string): CustomProviderInfo {
     image_max_workers: null,
     video_max_workers: null,
     audio_max_workers: null,
+    env_name: null,
   };
 }
 

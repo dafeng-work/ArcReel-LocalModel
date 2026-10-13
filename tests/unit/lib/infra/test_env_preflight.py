@@ -1,7 +1,12 @@
-"""G3 单机单卡互斥适配 — ``server.agent_runtime.preflight_env`` 单元测试。
+"""G3 单机单卡互斥适配 — ``lib.infra.env_preflight`` 单元测试。
 
 策略：把 ``asyncio.create_subprocess_exec`` 与 ``get_http_client`` 替换成 stub，
 断言 ``ensure_env`` 的状态机：当前已是目标 → no-op；env-gate 失败 / 超时 → 结构化错误。
+
+覆盖两类真实缺陷：
+- 探活必须带网关 Bearer（r9700-gateway 自 2026-10-10 起强制鉴权，无头请求恒 401）；
+- 探活端点按目标 env 类别二选一（ComfyUI 活着时 ``/system_stats`` 恒 200，「任一 200
+  即就绪」会把 LLM 未就绪误判成就绪）。
 """
 
 from __future__ import annotations
@@ -12,7 +17,7 @@ from typing import Any
 
 import pytest
 
-from server.agent_runtime import preflight_env as pe
+from lib.infra import env_preflight as pe
 
 
 class _StubProc:
@@ -224,3 +229,148 @@ async def test_ensure_env_missing_current_env_forces_switch(tmp_path: Path, monk
 
     result = await pe.ensure_env("video-ltx23-sulphur", probe_ready=_always_ready_probe())
     assert result.switched is True
+
+
+# ---- 探活端点按 env 类别二选一 ------------------------------------------------
+
+
+def test_probe_urls_for_llm_env_only_probes_llm_endpoint() -> None:
+    """LLM 类 env 只探 /v1/models。
+
+    回归「任一 200 即就绪」的误判：视频 env 起来时 /system_stats 恒 200 而 /v1/models 是 502，
+    宽松判据会把「LLM 根本没起」报成就绪。
+    """
+    for env in ("wide", "nsfw", "novel", "story", "fast", "nsfw-moe"):
+        assert pe.probe_urls_for_env(env) == (pe.LLM_PROBE_URL,), env
+
+
+def test_probe_urls_for_comfyui_env_only_probes_comfyui_endpoint() -> None:
+    for env in ("video-ltx23-dev", "video-ltx23-sulphur", "image-qwen21", "qwenimage"):
+        assert pe.probe_urls_for_env(env) == (pe.COMFYUI_PROBE_URL,), env
+
+
+def test_probe_urls_for_unknown_env_probes_both() -> None:
+    """未登记 env 回退宽松判据，避免对没登记过的 env 误报失败。"""
+    assert pe.probe_urls_for_env("some-future-env") == pe.DEFAULT_READY_PROBE_URLS
+
+
+# ---- 网关鉴权 token ----------------------------------------------------------
+
+
+def test_gateway_auth_token_prefers_env_var(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    common = tmp_path / "common.env"
+    common.write_text("R9700_API_KEY=from-file\n", encoding="utf-8")
+    monkeypatch.setenv("R9700_API_KEY", "from-env")
+
+    assert pe.gateway_auth_token(common_env_path=common) == "from-env"
+
+
+def test_gateway_auth_token_falls_back_to_common_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("R9700_API_KEY", raising=False)
+    common = tmp_path / "common.env"
+    common.write_text("# comment\nOTHER=1\nR9700_API_KEY=from-file\n", encoding="utf-8")
+
+    assert pe.gateway_auth_token(common_env_path=common) == "from-file"
+
+
+def test_gateway_auth_token_missing_file_returns_none(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("R9700_API_KEY", raising=False)
+
+    assert pe.gateway_auth_token(common_env_path=tmp_path / "nope.env") is None
+
+
+# ---- ready_probe 实际发请求 --------------------------------------------------
+
+
+class _StubResponse:
+    def __init__(self, status_code: int, content: bytes = b"ok") -> None:
+        self.status_code = status_code
+        self.content = content
+
+
+class _StubClient:
+    """记录每次 GET 的 URL 与 headers，按 URL→响应字典应答。"""
+
+    def __init__(self, responses: dict[str, _StubResponse]) -> None:
+        self._responses = responses
+        self.calls: list[tuple[str, dict[str, str] | None]] = []
+
+    async def get(
+        self,
+        url: str,
+        *,
+        timeout: float,  # noqa: ASYNC109 -- httpx 桩须保留 timeout 签名
+        headers: dict[str, str] | None = None,
+    ) -> _StubResponse:
+        self.calls.append((url, headers))
+        return self._responses.get(url, _StubResponse(502, b""))
+
+
+async def test_default_probe_ready_sends_bearer_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    """回归缺口 C：网关强制鉴权后，无头探活恒 401、永远判不出就绪。"""
+    monkeypatch.setattr(pe, "gateway_auth_token", lambda **_kw: "secret-token")
+    monkeypatch.setattr(pe, "READY_PROBE_MAX_ATTEMPTS", 1)
+    client = _StubClient({pe.LLM_PROBE_URL: _StubResponse(200, b"models")})
+    monkeypatch.setattr(pe, "get_http_client", lambda: client)
+
+    assert await pe._default_probe_ready((pe.LLM_PROBE_URL,)) is True
+    assert client.calls[0][1] == {"Authorization": "Bearer secret-token"}
+
+
+async def test_default_probe_ready_without_token_probes_unauthenticated(monkeypatch: pytest.MonkeyPatch) -> None:
+    """token 缺失时保持无头请求：兼容远端 / 未启用鉴权的网关。"""
+    monkeypatch.setattr(pe, "gateway_auth_token", lambda **_kw: None)
+    monkeypatch.setattr(pe, "READY_PROBE_MAX_ATTEMPTS", 1)
+    client = _StubClient({pe.LLM_PROBE_URL: _StubResponse(200, b"models")})
+    monkeypatch.setattr(pe, "get_http_client", lambda: client)
+
+    assert await pe._default_probe_ready((pe.LLM_PROBE_URL,)) is True
+    assert client.calls[0][1] is None
+
+
+async def test_default_probe_ready_ignores_comfyui_200_when_probing_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    """探 /v1/models 时，ComfyUI 端点的 200 不得被当成「LLM 已就绪」。
+
+    这是本次事故的判据缺口：只探 /v1/models，:8080/system_stats 即使 200 也不参与判定。
+    """
+    monkeypatch.setattr(pe, "gateway_auth_token", lambda **_kw: "tok")
+    monkeypatch.setattr(pe, "READY_PROBE_MAX_ATTEMPTS", 1)
+    client = _StubClient({pe.COMFYUI_PROBE_URL: _StubResponse(200, b"stats")})
+    monkeypatch.setattr(pe, "get_http_client", lambda: client)
+
+    assert await pe._default_probe_ready((pe.LLM_PROBE_URL,)) is False
+    assert [url for url, _ in client.calls] == [pe.LLM_PROBE_URL]
+
+
+async def test_default_probe_ready_requires_nonempty_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    """200 但响应体为空不算就绪（与 env-gate 脚本 wait_ready 同语义）。"""
+    monkeypatch.setattr(pe, "gateway_auth_token", lambda **_kw: "tok")
+    monkeypatch.setattr(pe, "READY_PROBE_MAX_ATTEMPTS", 1)
+    client = _StubClient({pe.LLM_PROBE_URL: _StubResponse(200, b"")})
+    monkeypatch.setattr(pe, "get_http_client", lambda: client)
+
+    assert await pe._default_probe_ready((pe.LLM_PROBE_URL,)) is False
+
+
+# ---- ensure_env 的探活按目标 env 选端点 ---------------------------------------
+
+
+async def test_ensure_env_probes_target_env_specific_endpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """切到 LLM env 时补探测只打 /v1/models，不打 /system_stats。"""
+    (tmp_path / "current.env").write_text("video-ltx23-dev\n", encoding="utf-8")
+    (tmp_path / "arcreel-env-gate.sh").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (tmp_path / "arcreel-env-gate.sh").chmod(0o755)
+
+    async def _fake_exec(*args: Any, **kwargs: Any):
+        return _StubProc(0)
+
+    monkeypatch.setattr(pe.asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(pe, "gateway_auth_token", lambda **_kw: "tok")
+    monkeypatch.setattr(pe, "READY_PROBE_MAX_ATTEMPTS", 1)
+    client = _StubClient({pe.LLM_PROBE_URL: _StubResponse(200, b"models")})
+    monkeypatch.setattr(pe, "get_http_client", lambda: client)
+
+    result = await pe.ensure_env("wide")
+
+    assert result.switched is True
+    assert {url for url, _ in client.calls} == {pe.LLM_PROBE_URL}

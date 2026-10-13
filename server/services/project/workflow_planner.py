@@ -21,6 +21,7 @@ from lib.generation.generation_result import (
     migration_problem,
     provider_checkpoint_from_task,
 )
+from lib.infra.env_preflight import DEFAULT_CURRENT_ENV_PATH, read_current_host_env
 from lib.project.asset_types import ASSET_SPECS
 from lib.project.project_manager import ProjectManager, get_project_manager
 from lib.project.project_migration_failure import (
@@ -44,7 +45,6 @@ from lib.workflow.workflow_plan import (
     draft_repair_resource_id,
 )
 from lib.workflow.workflow_state import WorkflowBlocker, WorkflowStateService, WorkflowStatus
-from server.agent_runtime.preflight_env import DEFAULT_CURRENT_ENV_PATH, read_current_host_env
 from server.draft_workflow import DraftDocType
 from server.services.admission.video_batch_admission import (
     admit_reference_video_batch,

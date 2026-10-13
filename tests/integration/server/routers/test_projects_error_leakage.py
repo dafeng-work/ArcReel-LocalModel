@@ -192,6 +192,71 @@ class TestUnexpectedErrorsDoNotLeak:
             # 回传的是翻译后的通用文案，而非裸异常串
             assert payload["overview_error"] == zh_errors.MESSAGES["overview_generation_failed"]
 
+    # ---- G4：文本 env 闸门 / 上游不可达 -------------------------------------
+
+    def test_generate_overview_env_switch_required_maps_to_422(self, tmp_path, monkeypatch):
+        """有在跑 GPU 作业导致无法自动切 env → 422 + 可执行提示，不是通用 500。"""
+        client = build_projects_client(monkeypatch, _FakePM(tmp_path))
+        with client:
+            resp = client.post("/api/v1/projects/env-busy/generate-overview")
+            assert resp.status_code == 422
+            body = resp.json()
+            assert body["diagnostic"]["code"] == "text_env_switch_required"
+            assert body["diagnostic"]["params"] == {
+                "current_env": "video-ltx23-dev",
+                "target_env": "wide",
+                "count": 2,
+            }
+            detail = body["detail"]
+            assert "wide" in detail
+            assert "video-ltx23-dev" in detail
+            assert "arcreel-env-gate.sh" in detail
+
+    def test_generate_overview_upstream_down_maps_to_422(self, tmp_path, monkeypatch):
+        """本机网关 502 是完全可诊断的信息，不该被抹平成「服务器内部错误」。"""
+        client = build_projects_client(monkeypatch, _FakePM(tmp_path))
+        with client:
+            resp = client.post("/api/v1/projects/upstream-down/generate-overview")
+            assert resp.status_code == 422
+            body = resp.json()
+            assert body["diagnostic"]["code"] == "text_provider_unavailable"
+            assert body["diagnostic"]["params"] == {
+                "provider": "custom-4",
+                "model": "qwen-wide",
+                "status": 502,
+            }
+
+    def test_set_project_source_env_busy_degrades_with_specific_message(self, tmp_path, monkeypatch):
+        """上传仍然成功（200），但要给出闸门专属文案与问题码，而非通用「概述生成失败」。"""
+        client = build_projects_client(monkeypatch, _FakePM(tmp_path))
+        with client:
+            resp = client.post(
+                "/api/v1/projects/env-busy/source",
+                data={"content": "正文", "generate_overview": "true"},
+            )
+            assert resp.status_code == 200
+            payload = resp.json()
+            assert payload["success"] is True
+            assert payload["overview"] is None
+            assert payload["overview_error_code"] == "text_env_switch_required"
+            assert payload["overview_error"] == zh_errors.MESSAGES["text_env_switch_required"].format(
+                target_env="wide", current_env="video-ltx23-dev", count=2
+            )
+
+    def test_set_project_source_upstream_down_degrades_with_specific_message(self, tmp_path, monkeypatch):
+        client = build_projects_client(monkeypatch, _FakePM(tmp_path))
+        with client:
+            resp = client.post(
+                "/api/v1/projects/upstream-down/source",
+                data={"content": "正文", "generate_overview": "true"},
+            )
+            assert resp.status_code == 200
+            payload = resp.json()
+            assert payload["overview_error_code"] == "text_provider_unavailable"
+            assert payload["overview_error"] == zh_errors.MESSAGES["text_provider_unavailable"].format(
+                provider="custom-4", model="qwen-wide", status=502
+            )
+
     def test_generate_overview_unexpected_error_maps_to_500(self, tmp_path, monkeypatch):
         sentinel = "LEAKED_SECRET_generate_overview"
         client = build_projects_client(monkeypatch, _FakePM(tmp_path))

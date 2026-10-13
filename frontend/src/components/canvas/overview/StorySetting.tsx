@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 
 import { API } from "@/api";
 import { OutputTruncationHint } from "@/components/shared/OutputTruncationHint";
+import { TextEnvHint } from "@/components/shared/TextEnvHint";
 import { UnsavedChangesBar } from "@/components/shared/edit-unit/UnsavedChangesBar";
 import { useEditUnit } from "@/components/shared/edit-unit/useEditUnit";
 import {
@@ -222,6 +223,7 @@ export function StorySetting({
             <>
               <p>{t("overview_generate_failed", { message: generateError.message })}</p>
               {generateError.truncation ? <OutputTruncationHint truncation={generateError.truncation} /> : null}
+              {generateError.env ? <TextEnvHint problem={generateError.env} /> : null}
             </>
           )}
         </div>

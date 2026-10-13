@@ -18,6 +18,7 @@ from lib.agent.agent_memory_paths import project_memory_dir
 from lib.db.base import DEFAULT_USER_ID
 from lib.i18n import DEFAULT_LOCALE
 from lib.infra.data_root_layout import DataRootLayout
+from lib.infra.env_preflight import DEFAULT_CURRENT_ENV_PATH, read_current_host_env
 from lib.infra.logging_utils import redact_diagnostic_text
 from lib.infra.path_safety import PathTraversalError, safe_join
 from server.agent_runtime.agent_access_policy import AgentAccessPolicy
@@ -50,10 +51,6 @@ from server.agent_runtime.models import (
     WithdrawalIntent,
 )
 from server.agent_runtime.options_assembler import OptionsAssembler
-from server.agent_runtime.preflight_env import (
-    DEFAULT_CURRENT_ENV_PATH,
-    read_current_host_env,
-)
 from server.agent_runtime.result_status import resolve_result_status
 from server.agent_runtime.sdk_frames import CommandLifecycle
 from server.agent_runtime.session_actor import SessionActor, SessionCommand

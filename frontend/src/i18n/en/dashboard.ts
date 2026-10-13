@@ -2972,7 +2972,11 @@ export default {
   'episode_planning_busy': 'Episode planning is in progress. Wait for it to finish or stop it before submitting again.',
   'episode_planning_failed': 'The last planning run did not finish: {{reason}}',
   'text_output_truncated_switch_model': 'The max output length of a built-in model cannot be changed. Switch to another text model in Settings and try again.',
+  // G4 text model env preflight gate
+  'text_env_switch_required_detail': "The host is on '{{currentEnv}}' but this text model needs '{{targetEnv}}'; {{count}} GPU task(s) are still running and switching would interrupt them. Wait for them to finish, then run the command below.",
+  'text_provider_unavailable_detail': '{{provider}}/{{model}} returned {{status}} from its upstream. On a single-GPU host this usually means the active env is not the one serving this model — check the host run/current.env.',
   'text_output_truncated_register_limit': 'Set max output length',
+  'text_provider_unavailable_open_settings': 'Check the provider env binding',
   'episode_planning_done': 'The whole source is split into episodes',
   'episode_planning_done_with_gaps': 'Planned to the end of the whole source. Unsplit source text remains in between',
   'episode_planning_stats_count': 'Episodes',

@@ -183,6 +183,10 @@ MESSAGES = {
     "env_switch_timeout": "Chuyển env quá thời gian (mô hình mới chưa sẵn sàng trước deadline); kiểm tra nhật ký arcreel-env-gate.sh",
     "env_switch_failed": "Chuyển env thất bại (arcreel-env-gate.sh thoát với mã khác 0 hoặc ready probe không bao giờ trả về 2xx); xem nhật ký phía máy chủ để biết cuối stderr",
     "workflow_dispatch_action_not_preflight": "Điểm cuối workflow-dispatch chỉ chấp nhận next_action kiểu PREFLIGHT_ENV_SWITCH",
+    # G4 cổng kiểm tra env của mô hình văn bản
+    "invalid_env_name": "'{name}' không phải env trên máy này; hiện có: {available}",
+    "text_env_switch_required": "Mô hình văn bản này cần env '{target_env}', nhưng máy đang chạy '{current_env}' và còn {count} tác vụ GPU đang chạy. Chuyển lúc này sẽ làm gián đoạn chúng — hãy đợi chạy xong, hoặc tự chuyển: arcreel-env-gate.sh {target_env} -- true",
+    "text_provider_unavailable": "Mô hình văn bản {provider}/{model} không khả dụng (cổng trả về {status}); trên máy đơn GPU, điều này thường do env đang hoạt động không phải env phục vụ mô hình này. Hãy kiểm tra run/current.env, hoặc ràng buộc env của nhà cung cấp trong Cài đặt → Nhà cung cấp",
     "speech_rate_out_of_range": "Nhịp đọc phải nằm trong khoảng {min} đến {max} (ký tự hoặc từ mỗi giây)",
     "episode_target_duration_out_of_range": "Thời lượng mục tiêu mỗi tập phải nằm trong khoảng {min} đến {max} giây",
     "character_not_found": "Nhân vật '{name}' không tồn tại",

@@ -8,7 +8,7 @@
 * :func:`parse_env_mapping` / :func:`validate_env_mapping` —— 解析并校验
   ``system_settings.env_mapping`` 的 JSON 字符串。
 
-不做通用化（占位符 / 命令白名单 / 凭据引用）：那部分由 ``server/agent_runtime/preflight_env``
+不做通用化（占位符 / 命令白名单 / 凭据引用）：那部分由 ``lib/infra/env_preflight``
 以 ``r9700-env`` 单一命令 + ``arcreel-env-gate.sh`` 单一闸门实现。
 """
 

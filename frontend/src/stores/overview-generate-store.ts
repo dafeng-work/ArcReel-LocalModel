@@ -3,6 +3,7 @@ import { create } from "zustand";
 import { API } from "@/api";
 import { errMsg } from "@/utils/async";
 import { outputTruncationOfError, type OutputTruncation } from "@/utils/output-truncation";
+import { textEnvProblemOfError, type TextEnvProblem } from "@/utils/text-env-problem";
 
 import { useProjectsStore } from "./projects-store";
 
@@ -11,7 +12,7 @@ import { useProjectsStore } from "./projects-store";
  * `refresh` 是生成已落盘，之后取回项目数据失败，该项目的数据之后重新加载成功即清除。
  */
 export type StoryGenerateError =
-  | { kind: "generate"; message: string; truncation: OutputTruncation | null }
+  | { kind: "generate"; message: string; truncation: OutputTruncation | null; env: TextEnvProblem | null }
   | { kind: "refresh" };
 
 interface OverviewGenerateState {
@@ -46,7 +47,7 @@ export const useOverviewGenerateStore = create<OverviewGenerateState>((set, get)
       const refreshed = await useProjectsStore.getState().refreshProject(projectName);
       if (refreshed === "failed") error = { kind: "refresh" };
     } catch (err) {
-      error = { kind: "generate", message: errMsg(err), truncation: outputTruncationOfError(err) };
+      error = { kind: "generate", message: errMsg(err), truncation: outputTruncationOfError(err), env: textEnvProblemOfError(err) };
     }
     set((s) => ({
       generating: without(s.generating, projectName),

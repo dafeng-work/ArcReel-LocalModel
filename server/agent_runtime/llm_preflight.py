@@ -22,13 +22,13 @@ from typing import Any
 import httpx
 
 from lib.config.dispatcher_schema import effective_env_mapping, parse_execution_mode
-from lib.infra.httpx_shared import get_http_client
-from server.agent_runtime.preflight_env import (
+from lib.infra.env_preflight import (
     DEFAULT_CURRENT_ENV_PATH,
     EnvSwitchError,
     ensure_env,
     read_current_host_env,
 )
+from lib.infra.httpx_shared import get_http_client
 
 logger = logging.getLogger(__name__)
 

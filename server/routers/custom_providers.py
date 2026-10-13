@@ -22,6 +22,7 @@ from arcreel_market_core.video_backend_contract import ReferenceAudioMode, audio
 from lib.backends.artifact_download_guard import artifact_http_client
 from lib.backends.http_status_errors import raise_for_status_redacted
 from lib.backends.image_backends.base import ImageCapability
+from lib.config.dispatcher_schema import list_available_envs
 from lib.config.repository import mask_secret
 from lib.custom_provider import is_custom_endpoint, make_provider_id
 from lib.custom_provider.capabilities import (
@@ -228,6 +229,7 @@ class CreateProviderRequest(BaseModel):
     image_max_workers: MaxWorkers
     video_max_workers: MaxWorkers
     audio_max_workers: MaxWorkers
+    env_name: str | None = None
 
 
 class UpdateProviderRequest(BaseModel):
@@ -247,6 +249,25 @@ class FullUpdateProviderRequest(BaseModel):
     image_max_workers: MaxWorkers
     video_max_workers: MaxWorkers
     audio_max_workers: MaxWorkers
+    env_name: str | None = None
+
+
+def _validate_env_name(env_name: str | None) -> str | None:
+    """校验 env 绑定名（G4）。空串归一为 None（清除绑定）。
+
+    白名单来自宿主 ``env/*.env`` 目录扫描；该目录在容器部署下依赖 bind mount，缺失时
+    ``list_available_envs()`` 返回空集——此时**不校验**（放行），否则未挂载 env 目录的部署
+    连「清除绑定」都做不到。与 ``env_mapping`` 校验的区别只在于此处失败降级为放行而非报错。
+    """
+    if env_name is None:
+        return None
+    normalized = env_name.strip()
+    if not normalized:
+        return None
+    available = list_available_envs()
+    if available and normalized not in available:
+        raise BadRequestError("invalid_env_name", name=normalized, available=", ".join(sorted(available)))
+    return normalized
 
 
 class ConnectivityCheckRequest(BaseModel):
@@ -291,6 +312,8 @@ class ProviderResponse(BaseModel):
     image_max_workers: int | None = None
     video_max_workers: int | None = None
     audio_max_workers: int | None = None
+    # G4：本 provider 由宿主该 env 提供；None = 不感知 env（预检旁路）。
+    env_name: str | None = None
 
 
 class ConnectivityCheckResponse(BaseModel):
@@ -513,6 +536,7 @@ def _provider_to_response(
         image_max_workers=provider.image_max_workers,
         video_max_workers=provider.video_max_workers,
         audio_max_workers=provider.audio_max_workers,
+        env_name=provider.env_name,
     )
 
 
@@ -860,6 +884,7 @@ async def create_provider(
         image_max_workers=body.image_max_workers,
         video_max_workers=body.video_max_workers,
         audio_max_workers=body.audio_max_workers,
+        env_name=_validate_env_name(body.env_name),
     )
     await session.commit()
     await _invalidate_caches(request)
@@ -958,6 +983,8 @@ async def full_update_provider(
         "image_max_workers": body.image_max_workers,
         "video_max_workers": body.video_max_workers,
         "audio_max_workers": body.audio_max_workers,
+        # env 绑定同样是 PUT 的权威来源：始终写入（含 None 清除）
+        "env_name": _validate_env_name(body.env_name),
     }
     if body.api_key is not None:
         kwargs["api_key"] = body.api_key

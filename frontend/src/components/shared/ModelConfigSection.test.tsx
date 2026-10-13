@@ -1352,6 +1352,7 @@ describe("dimensions a ComfyUI workflow fixes", () => {
     image_max_workers: null,
     video_max_workers: null,
     audio_max_workers: null,
+    env_name: null,
     models: [
       {
         id: 1,

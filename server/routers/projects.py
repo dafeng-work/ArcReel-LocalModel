@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 from lib.agent.profile_manifest import ContentMode
 from lib.backends.text_backends.base import TextOutputTruncatedError
+from lib.backends.text_env_gate import TextEnvSwitchRequired, TextProviderUnavailableError
 from lib.config.resolver import (
     ConfigResolver,
     VideoBucketCapabilityError,
@@ -58,6 +59,12 @@ from lib.generation.video_request_facts import ResolutionOverride, VideoRequestF
 from lib.i18n import render_generation_input_error, render_message
 from lib.infra.api_errors import ApiError, BadRequestError, ConflictError, NotFoundError, UnprocessableError
 from lib.infra.async_thread import EventLoopBridge, run_sync_transaction
+from lib.infra.env_preflight import (
+    EnvSwitchError,
+    EnvSwitchFailed,
+    EnvSwitchTimeout,
+    ensure_env,
+)
 from lib.infra.json_io import domain_error_on_value_error
 from lib.project.asset_fingerprints import compute_asset_fingerprints
 from lib.project.asset_types import asset_name_comparison_key
@@ -90,12 +97,6 @@ from lib.workflow.workflow_state import (
     WorkflowRequestError,
     WorkflowStateService,
     WorkflowStatus,
-)
-from server.agent_runtime.preflight_env import (
-    EnvSwitchError,
-    EnvSwitchFailed,
-    EnvSwitchTimeout,
-    ensure_env,
 )
 from server.auth import CurrentUser, create_download_token, verify_download_token
 from server.dependencies import require_project_migration_ok
@@ -916,7 +917,7 @@ async def workflow_preflight_dispatch(
     """G3 单机单卡互斥适配：消费 PREFLIGHT_ENV_SWITCH。
 
     收到一个 ``PREFLIGHT_ENV_SWITCH`` next_action 之后：
-    1. 调 :func:`server.agent_runtime.preflight_env.ensure_env` 触发 ``arcreel-env-gate.sh``。
+    1. 调 :func:`lib.infra.env_preflight.ensure_env` 触发 ``arcreel-env-gate.sh``。
     2. 成功 → 把 ``resume_action`` 解析回 :class:`WorkflowNextAction` 返回（让前端继续 dispatch）。
     3. 失败 → 把错误码与 stderr 末尾回传，i18n 文案由前端按 error_code 渲染。
     """
@@ -2034,6 +2035,14 @@ async def set_project_source(
                 with project_change_source("webui"):
                     overview = await manager.generate_overview(name)
                 result["overview"] = overview
+            except _TEXT_GATE_ERRORS as ov_err:
+                # G4：env 未就绪 / 上游不可达。上传本身仍然成功（源文件已落盘），但概述没生成，
+                # 且要给出专属文案与问题码，让前端能提示「等任务跑完再切」或「查 env 绑定」。
+                logger.warning("上传后概览生成被文本闸门拦下: name=%s (%s)", name, ov_err)
+                result["overview"] = None
+                gate_error = _text_gate_http_error(ov_err)
+                result["overview_error"] = _t(gate_error.key, **gate_error.params)
+                result["overview_error_code"] = gate_error.key
             except Exception as ov_err:
                 # 概览生成是上传的可选后续步骤，失败仅降级回传提示、不影响上传成功。
                 # 裸 str(ov_err) 可能携带服务器路径等内部细节，回传翻译后的通用文案。
@@ -2057,6 +2066,48 @@ async def set_project_source(
 
 
 # ==================== 项目概述管理 ====================
+
+
+def _text_gate_http_error(exc: Exception) -> ApiError:
+    """把文本 env 前置闸门 / 上游不可达异常翻译成结构化问题票（G4）。
+
+    一律 422 而非 500：这些不是服务端内部故障，而是「当前配置或宿主状态让这次生成做不成」，
+    带着可执行的出路下发给前端。调用方 :func:`raise` 出去即可。
+
+    一律挂 ``diagnostic``：前端按 ``code`` 分派具体的提示形态（显示目标 env 与手动切换命令 /
+    显示上游状态与排查指引），只给 ``detail`` 的话前端只能把它当一句话显示。
+    """
+    if isinstance(exc, TextEnvSwitchRequired):
+        params: dict[str, object] = {
+            "current_env": exc.current_env,
+            "target_env": exc.target_env,
+            "count": exc.active_task_count,
+        }
+        key = "text_env_switch_required"
+    elif isinstance(exc, TextProviderUnavailableError):
+        params = {
+            "provider": exc.provider_id,
+            "model": exc.model,
+            "status": exc.upstream_status if exc.upstream_status is not None else exc.reason,
+        }
+        key = "text_provider_unavailable"
+    elif isinstance(exc, EnvSwitchTimeout):
+        key = "env_switch_timeout"
+        params = {}
+    elif isinstance(exc, EnvSwitchError):
+        key = "env_switch_failed"
+        params = {}
+    else:
+        raise exc
+    return UnprocessableError(key, **params).with_diagnostic({"code": key, "params": params})
+
+
+#: 会被翻译成问题票的文本闸门异常族。路由的 except 子句用它，避免逐个类型重复列举。
+_TEXT_GATE_ERRORS = (
+    TextEnvSwitchRequired,
+    TextProviderUnavailableError,
+    EnvSwitchError,
+)
 
 
 @router.post("/projects/{name}/generate-overview", dependencies=[Depends(require_project_migration_ok)])
@@ -2109,6 +2160,11 @@ async def generate_overview(name: str, _t: Translator):
     except EmptySourceError as e:
         logger.warning("生成概述参数错误: name=%s (%s)", name, e)
         raise BadRequestError("overview_source_empty") from e
+    except _TEXT_GATE_ERRORS as exc:
+        # G4：文本 env 未就绪 / 上游不可达。这类失败带着可执行出路（切哪个 env、等谁跑完、
+        # 查哪个绑定），不能落到下面的通用 500 里被抹平成「请稍后重试」。
+        logger.warning("生成概述被文本闸门拦下: name=%s (%s)", name, exc)
+        raise _text_gate_http_error(exc) from exc
     except json.JSONDecodeError as exc:
         # 供应商解析链路内部会重新 load_project，project.json 损坏时不能误判为「未配置供应商」
         logger.exception("生成概述失败：项目数据损坏 name=%s", name)

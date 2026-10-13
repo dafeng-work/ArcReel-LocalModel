@@ -2971,7 +2971,11 @@ export default {
   'episode_planning_busy': '分集规划正在进行，请等待完成或停止后再提交。',
   'episode_planning_failed': '上次规划没有完成：{{reason}}',
   'text_output_truncated_switch_model': '内置模型的最大输出长度不能修改，请在设置中换一个文本模型后再试。',
+  // G4 文本模型 env 前置闸门
+  'text_env_switch_required_detail': '宿主当前运行在「{{currentEnv}}」，而该文本模型需要「{{targetEnv}}」；还有 {{count}} 个 GPU 任务在跑，切换会打断它们。请等任务跑完后执行下面的命令。',
+  'text_provider_unavailable_detail': '{{provider}}/{{model}} 的上游返回 {{status}}。本机单卡下通常是当前 env 不是该模型所属 env，请检查宿主的 run/current.env。',
   'text_output_truncated_register_limit': '去登记最大输出长度',
+  'text_provider_unavailable_open_settings': '去检查供应商的 env 绑定',
   'episode_planning_done': '整本源文已全部分集',
   'episode_planning_done_with_gaps': '已规划到整本源文结尾，中间还有未切分的原文',
   'episode_planning_stats_count': '集数',

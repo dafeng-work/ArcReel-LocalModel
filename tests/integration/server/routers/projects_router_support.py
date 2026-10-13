@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from lib.backends.providers import CallStatus
 from lib.backends.text_backends.base import TextOutputTruncatedError
+from lib.backends.text_env_gate import TextEnvSwitchRequired, TextProviderUnavailableError
 from lib.db.models.api_call import ApiCall
 from lib.db.repositories.session_repo import SessionRepository
 from lib.db.repositories.task_repo import TaskRepository
@@ -97,6 +98,9 @@ class _FakePM:
         (self.base / "corrupted").mkdir(parents=True, exist_ok=True)
         (self.base / "bad-schema").mkdir(parents=True, exist_ok=True)
         (self.base / "truncated").mkdir(parents=True, exist_ok=True)
+        # G4 文本闸门：env 未就绪（拒绝切换）/ 本机网关上游不可达
+        (self.base / "env-busy").mkdir(parents=True, exist_ok=True)
+        (self.base / "upstream-down").mkdir(parents=True, exist_ok=True)
         # 上传后概览生成失败的软降级路径：项目存在，但 generate_overview 抛带路径异常
         (self.base / "leaky").mkdir(parents=True, exist_ok=True)
 
@@ -104,7 +108,7 @@ class _FakePM:
         return ["ready", "empty", "broken"]
 
     def project_exists(self, name):
-        return name in {"ready", "broken", "leaky"}
+        return name in {"ready", "broken", "leaky", "env-busy", "upstream-down"}
 
     def load_project(self, name):
         if name == "broken":
@@ -289,6 +293,14 @@ class _FakePM:
             # 模拟模型输出未通过 schema 校验：pydantic ValidationError 同样是 ValueError 子类，
             # 不该被误判为「未配置供应商」
             _OverviewProbe.model_validate({})
+        if name == "env-busy":
+            # 目标 env 未激活，且有在跑的 GPU 作业 → 不自动切换，给出可执行提示
+            raise TextEnvSwitchRequired(current_env="video-ltx23-dev", target_env="wide", active_task_count=2)
+        if name == "upstream-down":
+            # 本机网关上游不可达：502 是完全可诊断的信息，不该被抹平成通用 500
+            raise TextProviderUnavailableError(
+                provider_id="custom-4", model="qwen-wide", upstream_status=502, reason="InternalServerError"
+            )
         raise EmptySourceError("source missing")
 
 

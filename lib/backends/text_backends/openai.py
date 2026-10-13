@@ -20,9 +20,10 @@ from lib.backends.text_backends.base import (
     structured_fallback_reason,
     truncate_for_log,
 )
+from lib.backends.text_env_gate import is_definite_upstream_unavailable, is_loopback_base_url
 from lib.config.url_utils import is_official_openai_base_url
 from lib.infra.logging_utils import format_kwargs_for_log
-from lib.infra.retry import with_retry_async
+from lib.infra.retry import NonRetryableError, with_retry_async
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,7 @@ class OpenAITextBackend:
     ):
         # 禁用 SDK 内置重试，由本层 generate() 统一管理重试策略
         self._client = create_openai_client(api_key=api_key, base_url=base_url, max_retries=0)
+        self._base_url = base_url
         self._model = model or DEFAULT_MODEL
         # 复用 OpenAI 兼容协议的 provider（如 dashscope）须用真实 provider 记账，
         # 否则计费查表会命中 OpenAI 的 USD 费率而非自身定价。
@@ -71,6 +73,15 @@ class OpenAITextBackend:
     @property
     def name(self) -> str:
         return self._provider_name
+
+    @property
+    def base_url(self) -> str | None:
+        """本 provider 的 base_url。
+
+        上层（``TextGenerator``）据此区分「本机网关上游不可达」与远端瞬时故障：只有回环
+        端点上，连接类失败才是确定性的（端口没监听），远端的同类失败仍值得重试。
+        """
+        return self._base_url
 
     @property
     def model(self) -> str:
@@ -170,6 +181,11 @@ class OpenAITextBackend:
                     exc,
                 )
                 return None
+            # 本机网关的上游没在跑时，重发同一份请求不会改变结果——只会把 4 次尝试、
+            # 退避 2+4+8 秒（约 15 秒）的预算耗光，最后仍以同一个错误收场。包成
+            # NonRetryableError 让 retry_async 立即短路；远端端点不在此列，保持重试。
+            if is_loopback_base_url(self._base_url) and is_definite_upstream_unavailable(exc):
+                raise NonRetryableError(str(exc)) from exc
             raise
 
         usage = response.usage

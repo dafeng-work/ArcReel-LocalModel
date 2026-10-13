@@ -58,6 +58,13 @@ class CustomProvider(TimestampMixin, Base):
     # 不同 provider 互斥串行。NULL = 现状行为（不参与互斥）。text lane 不受此字段约束，
     # 4 个 LLM 子任务继续并发（LLM 不占 GPU）。
     exclusive_resource_group: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # G4（文本 env 前置闸门）：非空时，本 provider 由宿主该 env 提供——本机单卡多模型互斥下，
+    # 发文本请求前先确认宿主 `run/current.env` 与此一致，不一致则经 `arcreel-env-gate.sh` 切换。
+    # NULL = 现状行为（完全不感知 env），是未启用本特性的部署的默认值，保证零回归。
+    #
+    # 与 `exclusive_resource_group` 的分工：那个字段表达「若干 provider 共享一块独占资源」，
+    # 解决并发互斥；这个字段表达「provider 归哪个 env 管」，解决可用性。二者正交，可同时非空。
+    env_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     @property
     def provider_id(self) -> str:

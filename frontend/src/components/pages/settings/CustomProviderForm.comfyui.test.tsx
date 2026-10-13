@@ -84,6 +84,7 @@ const CREATED = {
   image_max_workers: null,
   video_max_workers: null,
   audio_max_workers: null,
+  env_name: null,
 };
 
 function renderForm(initialEndpoint?: string) {
@@ -319,6 +320,7 @@ describe("CustomProviderForm（comfyui 协议）", () => {
       image_max_workers: null,
       video_max_workers: null,
       audio_max_workers: null,
+      env_name: null,
     });
     renderForm();
     await waitFor(() => expect(useEndpointCatalogStore.getState().initialized).toBe(true));

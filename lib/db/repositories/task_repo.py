@@ -466,6 +466,31 @@ class TaskRepository(BaseRepository):
         )
         return [_task_to_dict(t) for t in result.scalars().all()]
 
+    #: 占本机 GPU 的 lane（G4 env 前置闸门用）。text lane 刻意不在其中——否则并行文本任务
+    #: 会互相挡路，而 env 切换与文本模型调用无关。按 media_type 判定而非枚举 task_type：
+    #: 媒体类型是任务的稳定归类，新增 task_type 不会漏判。
+    GPU_MEDIA_TYPES = ("image", "video", "audio")
+
+    async def count_active_gpu_tasks(self) -> int:
+        """统计当前处于活动态、且占 GPU 的任务数。
+
+        G4：env 前置闸门在切 env（会 ``stop_all``）之前据此判断有没有在跑的作业，有则
+        快速失败而不是把别人的任务打断。跨项目统计——env 是宿主级全局单例，任何项目在跑
+        的 GPU 作业都会被这次切换波及。
+
+        查不到 / 查询异常一律按 0 处理：宁可放行切换，也不要因一次统计失败就把闸门焊死。
+        """
+        try:
+            result = await self.session.execute(
+                select(func.count())
+                .select_from(Task)
+                .where(Task.status.in_(ACTIVE_TASK_STATUSES), Task.media_type.in_(self.GPU_MEDIA_TYPES))
+            )
+            return int(result.scalar() or 0)
+        except Exception:
+            logger.warning("count_active_gpu_tasks failed; treating as 0 (gate stays open)", exc_info=True)
+            return 0
+
     # NOTE: In multi-user mode, override this method to add user_id filtering
     async def claim_next(
         self,

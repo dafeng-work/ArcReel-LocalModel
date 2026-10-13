@@ -183,6 +183,10 @@ MESSAGES = {
     "env_switch_timeout": "Env switch timed out before the new model became ready; check arcreel-env-gate.sh logs",
     "env_switch_failed": "Env switch failed (arcreel-env-gate.sh exited with non-zero status or ready probe never got 2xx); see server log for stderr tail",
     "workflow_dispatch_action_not_preflight": "workflow-dispatch endpoint only accepts PREFLIGHT_ENV_SWITCH next_action",
+    # G4 text model env preflight gate
+    "invalid_env_name": "'{name}' is not an env on this host; available: {available}",
+    "text_env_switch_required": "This text model needs env '{target_env}', but the host is on '{current_env}' and {count} GPU task(s) are still running. Switching now would interrupt them — wait for them to finish, or switch manually: arcreel-env-gate.sh {target_env} -- true",
+    "text_provider_unavailable": "Text model {provider}/{model} is unavailable (gateway returned {status}); on a single-GPU host this usually means the active env is not the one that serves this model. Check run/current.env, or the provider's env binding in Settings → Providers",
     "speech_rate_out_of_range": "Spoken pace must be between {min} and {max} (characters or words per second)",
     "episode_target_duration_out_of_range": "Episode target length must be between {min} and {max} seconds",
     "character_not_found": "Character '{name}' does not exist",
