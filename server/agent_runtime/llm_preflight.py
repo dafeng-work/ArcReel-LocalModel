@@ -10,6 +10,10 @@ env 可能是图片 / 视频 env（如 `image-qwen21`），此时 llama-server �
 ``nsfw``），等就绪后再继续。
 
 **TTL 缓存**：可达状态缓存 60 秒，避免每条消息都跑一次 HTTP 探测。
+
+**鉴权**：探测请求与 ``lib.infra.env_preflight`` 的 ``ready_probe`` 共用
+:func:`~lib.infra.env_preflight.gateway_auth_headers` 构造 Bearer 头。网关强制鉴权后
+无头探测恒 401，会把「已就绪」误判成「不可达」，白切一次 env 才失败。
 """
 
 from __future__ import annotations
@@ -26,6 +30,7 @@ from lib.infra.env_preflight import (
     DEFAULT_CURRENT_ENV_PATH,
     EnvSwitchError,
     ensure_env,
+    gateway_auth_headers,
     read_current_host_env,
 )
 from lib.infra.httpx_shared import get_http_client
@@ -113,10 +118,16 @@ async def probe_llm_endpoint(url: str = DEFAULT_LLM_PROBE_URL) -> bool:
 
 
 async def _probe_with_client(client: Any, url: str) -> bool:
-    """用给定 httpx client 探测；2xx 视为可达。"""
+    """用给定 httpx client 探测；2xx 视为可达。
 
+    必须带网关 Bearer：``r9700-gateway`` 自 2026-10-10 起对全部端点强制鉴权（见
+    :mod:`lib.infra.env_preflight` 模块 docstring）。无头探测恒 401，会让本已就绪的
+    LLM 被判成「不可达」，白触发一次 env 切换后仍然失败。
+    """
+
+    headers = gateway_auth_headers()
     try:
-        response = await client.get(url, timeout=LLM_PROBE_TIMEOUT_SECONDS)
+        response = await client.get(url, timeout=LLM_PROBE_TIMEOUT_SECONDS, headers=headers)
     except (httpx.HTTPError, OSError) as exc:
         logger.debug("llm probe %s failed: %s", url, exc)
         return False

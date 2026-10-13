@@ -14,6 +14,15 @@ def _reset_cache():
     lp.invalidate_cache()
 
 
+@pytest.fixture(autouse=True)
+def no_gateway_token(monkeypatch: pytest.MonkeyPatch):
+    """默认不发鉴权头：本档不读真实 ``env/common.env``（unit 档不触达真实文件）。
+
+    需要带头的用例自行覆盖这个 patch。
+    """
+    monkeypatch.setattr(lp, "gateway_auth_headers", lambda: None)
+
+
 def _settings_reader(settings: dict[str, str]):
     """构造 ``ensure_llm_ready`` 的 read_settings_async seam，避免 monkey-patch 私有符号。"""
 
@@ -26,38 +35,72 @@ def _settings_reader(settings: dict[str, str]):
 # ---- probe_llm_endpoint ----------------------------------------------------
 
 
+class _StubResponse:
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+
+
+class _StubClient:
+    """记录每次 GET 的 headers，按构造时给定的响应或异常应答。"""
+
+    def __init__(self, response: _StubResponse | None = None, raises: Exception | None = None) -> None:
+        self._response = response
+        self._raises = raises
+        self.calls: list[dict[str, str] | None] = []
+
+    async def get(
+        self,
+        url: str,
+        *,
+        timeout: float,  # noqa: ASYNC109 -- httpx 桩须保留 timeout 签名
+        headers: dict[str, str] | None = None,
+    ) -> _StubResponse:
+        self.calls.append(headers)
+        if self._raises is not None:
+            raise self._raises
+        assert self._response is not None
+        return self._response
+
+
+async def test_probe_llm_endpoint_sends_bearer_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    """回归：网关强制鉴权后，LLM 探测不带 Bearer 恒 401 → 白切一次 env 后仍失败。"""
+    monkeypatch.setattr(lp, "gateway_auth_headers", lambda: {"Authorization": "Bearer secret-token"})
+    client = _StubClient(_StubResponse(200))
+    monkeypatch.setattr(lp, "get_http_client", lambda: client)
+
+    assert await lp.probe_llm_endpoint("http://fake") is True
+    assert client.calls == [{"Authorization": "Bearer secret-token"}]
+
+
+async def test_probe_llm_endpoint_without_token_probes_unauthenticated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """token 缺失时保持无头请求：兼容远端 / 未启用鉴权的网关。"""
+    monkeypatch.setattr(lp, "gateway_auth_headers", lambda: None)
+    client = _StubClient(_StubResponse(200))
+    monkeypatch.setattr(lp, "get_http_client", lambda: client)
+
+    assert await lp.probe_llm_endpoint("http://fake") is True
+    assert client.calls == [None]
+
+
 async def test_probe_llm_endpoint_success(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _Resp:
-        status_code = 200
-
-    class _FakeClient:
-        async def get(self, url, timeout=None):  # noqa: ASYNC109 -- httpx.AsyncClient.get 形参与 stub 形参与生产一致；mock helper 无副作用
-            return _Resp()
-
-    monkeypatch.setattr(lp, "get_http_client", lambda: _FakeClient())
+    client = _StubClient(_StubResponse(200))
+    monkeypatch.setattr(lp, "get_http_client", lambda: client)
     assert await lp.probe_llm_endpoint("http://fake") is True
 
 
 async def test_probe_llm_endpoint_5xx_returns_false(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _Resp:
-        status_code = 503
-
-    class _FakeClient:
-        async def get(self, url, timeout=None):  # noqa: ASYNC109 -- httpx.AsyncClient.get 形参与 stub 形参与生产一致；mock helper 无副作用
-            return _Resp()
-
-    monkeypatch.setattr(lp, "get_http_client", lambda: _FakeClient())
+    client = _StubClient(_StubResponse(503))
+    monkeypatch.setattr(lp, "get_http_client", lambda: client)
     assert await lp.probe_llm_endpoint("http://fake") is False
 
 
 async def test_probe_llm_endpoint_connection_error_returns_false(monkeypatch: pytest.MonkeyPatch) -> None:
     import httpx
 
-    class _FakeClient:
-        async def get(self, url, timeout=None):  # noqa: ASYNC109 -- httpx.AsyncClient.get 形参与 stub 形参与生产一致；mock helper 无副作用
-            raise httpx.ConnectError("refused")
-
-    monkeypatch.setattr(lp, "get_http_client", lambda: _FakeClient())
+    client = _StubClient(raises=httpx.ConnectError("refused"))
+    monkeypatch.setattr(lp, "get_http_client", lambda: client)
     assert await lp.probe_llm_endpoint("http://fake") is False
 
 

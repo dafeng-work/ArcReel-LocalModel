@@ -227,6 +227,20 @@ def gateway_auth_token(
     return None
 
 
+def gateway_auth_headers(
+    env_var: str | None = None,
+    common_env_path: Path | None = None,
+) -> dict[str, str] | None:
+    """构造网关探活请求头；无 token 时返回 ``None``，调用方据此保持无头请求。
+
+    **鉴权头的唯一构造点**：``ready_probe`` 与 ``server.agent_runtime.llm_preflight``
+    共用本函数。2026-10-13 的事故正是两处各自拼 Bearer、只改了一处 —— 另一处无头探测
+    恒 401，把「已就绪」误判成「不可达」，白白触发一次 env 切换后才失败。
+    """
+    token = gateway_auth_token(env_var=env_var, common_env_path=common_env_path)
+    return {"Authorization": f"Bearer {token}"} if token else None
+
+
 async def _default_probe_ready(urls: tuple[str, ...] = DEFAULT_READY_PROBE_URLS) -> bool:
     """轮询给定探活端点，任一 200 且响应体非空即视为后端就绪。
 
@@ -235,9 +249,8 @@ async def _default_probe_ready(urls: tuple[str, ...] = DEFAULT_READY_PROBE_URLS)
     """
 
     client = get_http_client()
-    token = gateway_auth_token()
-    headers = {"Authorization": f"Bearer {token}"} if token else None
-    if token is None:
+    headers = gateway_auth_headers()
+    if headers is None:
         logger.info("ready_probe: no gateway token found; probing without auth header")
 
     for attempt in range(1, READY_PROBE_MAX_ATTEMPTS + 1):

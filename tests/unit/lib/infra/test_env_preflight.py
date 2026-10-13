@@ -279,6 +279,19 @@ def test_gateway_auth_token_missing_file_returns_none(monkeypatch: pytest.Monkey
     assert pe.gateway_auth_token(common_env_path=tmp_path / "nope.env") is None
 
 
+def test_gateway_auth_headers_builds_bearer(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """鉴权头的唯一构造点：ready_probe 与 llm_preflight 共用同一份 Bearer 拼法。"""
+    monkeypatch.setenv("R9700_API_KEY", "from-env")
+
+    assert pe.gateway_auth_headers(common_env_path=tmp_path / "nope.env") == {"Authorization": "Bearer from-env"}
+
+
+def test_gateway_auth_headers_without_token_returns_none(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("R9700_API_KEY", raising=False)
+
+    assert pe.gateway_auth_headers(common_env_path=tmp_path / "nope.env") is None
+
+
 # ---- ready_probe 实际发请求 --------------------------------------------------
 
 
