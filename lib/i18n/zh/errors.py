@@ -177,6 +177,7 @@ MESSAGES = {
     "env_switch_invalid_target": "PREFLIGHT_ENV_SWITCH next_action 未指定 target_env",
     "env_switch_timeout": "env 切换超时（新模型未在 deadline 内就绪）；请查看 arcreel-env-gate.sh 日志",
     "env_switch_failed": "env 切换失败（arcreel-env-gate.sh 退出码非零或 ready 探测始终非 2xx）；stderr 末尾见服务端日志",
+    "env_switch_busy": "GPU 正被另一个批次占用：未取得 env 互斥锁（run/env.lock），本次未做任何切换；请等当前批次跑完后重试",
     "workflow_dispatch_action_not_preflight": "workflow-dispatch 端点只接受 PREFLIGHT_ENV_SWITCH 类型的 next_action",
     # G4 文本模型 env 前置闸门
     "invalid_env_name": "「{name}」不是本机存在的 env；可用：{available}",

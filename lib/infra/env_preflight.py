@@ -72,6 +72,11 @@ READY_PROBE_HTTP_TIMEOUT_SECONDS: Final[float] = 4.0
 READY_PROBE_MAX_ATTEMPTS: Final[int] = 30
 READY_PROBE_INTERVAL_SECONDS: Final[float] = 5.0
 
+#: 闸门「拿不到 env 互斥锁」的退出码（POSIX ``EX_TEMPFAIL``）。宿主侧
+#: ``bin/r9700-env`` 与 ``bin/arcreel-env-gate.sh`` 共用 ``run/env.lock``，抢不到时
+#: 统一以此码退出且不改动任何状态。见 :class:`EnvSwitchBusy`。
+GATE_LOCK_BUSY_EXIT_CODE: Final[int] = 75
+
 #: env 类别 → 探活端点。分类与 ``arcreel-env-gate.sh`` 的 ``probe_for_env`` 保持一致。
 #:
 #: 之所以必须分类而不能「任一 200 即就绪」：单机上 ComfyUI 与 LLM 是两套互斥 env，但网关
@@ -137,6 +142,29 @@ class EnvSwitchGateMissing(EnvSwitchError):
         super().__init__(
             f"env-gate script not found at {gate_path}; "
             f"check that /home/dafeng/ai-stack is bind-mounted into the ArcReel container"
+        )
+
+
+class EnvSwitchBusy(EnvSwitchError):
+    """env-gate 拿不到宿主机 env 互斥锁 —— GPU 正被另一个批次占用，**根本没开始切**。
+
+    与 :class:`EnvSwitchTimeout` 的区别是本类型存在的全部理由：超时是「切了但太慢」，
+    而忙是「压根没轮到」。宿主侧三个层级（``arc-batch.sh`` 批次锁 / 闸门锁 /
+    ``r9700-env`` 切换锁）共用 ``run/env.lock`` 这一把 flock，抢不到时统一以
+    :data:`GATE_LOCK_BUSY_EXIT_CODE` 退出，且**不改动任何状态**（尚未进 ``stop_all``）。
+
+    所以调用方应当按「忙，稍后重试」处理，而不是当成切换失败去排查 env 配置。
+    本模块以 ``--lock-timeout 0`` 调用闸门（fail-fast），因此这条路径不会消耗
+    :data:`DEFAULT_TIMEOUT_SECONDS` 预算 —— 否则排队会把「队列长」伪装成「切换超时」。
+    """
+
+    def __init__(self, target_env: str, stderr_tail: str | None = None) -> None:
+        self.target_env = target_env
+        self.stderr_tail = stderr_tail
+        super().__init__(
+            f"host GPU is busy with another batch; arcreel-env-gate.sh could not acquire "
+            f"run/env.lock while switching to {target_env!r}: "
+            f"{stderr_tail[-200:] if stderr_tail else '(no stderr)'}"
         )
 
 
@@ -365,6 +393,10 @@ async def ensure_env(
                 target,
                 "--timeout",
                 str(int(resolved_timeout - 5)),
+                # fail-fast：锁被占就立即 exit 75，不排队。这样「另一个批次在跑」
+                # 不会被伪装成 env 切换超时，也就不吃掉 DEFAULT_TIMEOUT_SECONDS 预算。
+                "--lock-timeout",
+                "0",
                 "--",
                 "true",
                 stdout=asyncio.subprocess.PIPE,
@@ -397,6 +429,10 @@ async def ensure_env(
         )
 
         if exit_code != 0:
+            # 锁忙是「可重试的忙」，不是「切换失败」——两者必须分开，否则用户会去查
+            # env 配置，而真正的原因只是 GPU 被另一个批次占着。
+            if exit_code == GATE_LOCK_BUSY_EXIT_CODE:
+                raise EnvSwitchBusy(target_env=target, stderr_tail=stderr_text[-2000:])
             raise EnvSwitchFailed(
                 target_env=target,
                 exit_code=exit_code,
@@ -462,7 +498,9 @@ __all__ = [
     "DEFAULT_TIMEOUT_SECONDS",
     "GATEWAY_BASE_URL",
     "GATEWAY_TOKEN_ENV_KEY",
+    "GATE_LOCK_BUSY_EXIT_CODE",
     "LLM_PROBE_URL",
+    "EnvSwitchBusy",
     "EnvSwitchError",
     "EnvSwitchFailed",
     "EnvSwitchGateMissing",

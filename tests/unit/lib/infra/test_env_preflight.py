@@ -187,6 +187,61 @@ async def test_ensure_env_gate_exit_nonzero_raises(tmp_path: Path, monkeypatch: 
     assert exc_info.value.log_path is not None
 
 
+# ---- 闸门锁忙（exit 75）→ EnvSwitchBusy，而不是 EnvSwitchFailed --------------------
+
+
+async def test_ensure_env_gate_lock_busy_raises_busy_not_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """锁被占时闸门以 75(EX_TEMPFAIL) 退出 —— 必须映射成「忙」而非「切换失败」。
+
+    两者语义完全不同：忙 = 压根没开始切、稍后重试即可；失败 = 切了但炸了，要查 env
+    配置。混为一谈会把用户引到错误的排查方向。
+    """
+    (tmp_path / "current.env").write_text("nsfw\n", encoding="utf-8")
+    (tmp_path / "arcreel-env-gate.sh").write_text("#!/bin/sh\nexit 75\n", encoding="utf-8")
+
+    async def _fake_exec(*args: Any, **kwargs: Any):
+        return _StubProc(pe.GATE_LOCK_BUSY_EXIT_CODE, stderr="[gate] ERROR: 拿不到 env 互斥锁".encode())
+
+    monkeypatch.setattr(pe.asyncio, "create_subprocess_exec", _fake_exec)
+
+    with pytest.raises(pe.EnvSwitchBusy) as exc_info:
+        await pe.ensure_env("image-qwen21", probe_ready=_always_ready_probe())
+    assert exc_info.value.target_env == "image-qwen21"
+    assert "互斥锁" in exc_info.value.stderr_tail
+    # 关键：不能被 EnvSwitchFailed 捕获（它是兄弟类，不是父类，故用 not isinstance 断言语义独立）
+    assert not isinstance(exc_info.value, pe.EnvSwitchFailed)
+
+
+async def test_ensure_env_passes_lock_timeout_zero_to_gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """闸门必须以 ``--lock-timeout 0``（fail-fast）调用。
+
+    否则排队会吃掉 DEFAULT_TIMEOUT_SECONDS=155s 预算，把「另一个批次在跑」伪装成
+    EnvSwitchTimeout —— 而闸门其实一秒都没切。
+    """
+    (tmp_path / "current.env").write_text("nsfw\n", encoding="utf-8")
+    gate = tmp_path / "arcreel-env-gate.sh"
+    gate.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+
+    captured: list[tuple[Any, ...]] = []
+
+    async def _fake_exec(*args: Any, **kwargs: Any):
+        captured.append(args)
+        return _StubProc(0)
+
+    monkeypatch.setattr(pe.asyncio, "create_subprocess_exec", _fake_exec)
+
+    await pe.ensure_env("image-qwen21", probe_ready=_always_ready_probe())
+
+    assert captured, "gate subprocess was never spawned"
+    argv = [str(a) for a in captured[0]]
+    idx = argv.index("--lock-timeout")
+    assert argv[idx + 1] == "0"
+    # 载荷仍是 true：fork 侧只负责切换，生成由 worker 异步跑
+    assert argv[-1] == "true"
+
+
 # ---- 子进程超时 → EnvSwitchTimeout + 子进程被 terminate/kill ----------------------
 
 

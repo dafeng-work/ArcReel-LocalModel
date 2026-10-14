@@ -182,6 +182,7 @@ MESSAGES = {
     "env_switch_invalid_target": "PREFLIGHT_ENV_SWITCH next_action không chỉ định target_env",
     "env_switch_timeout": "Chuyển env quá thời gian (mô hình mới chưa sẵn sàng trước deadline); kiểm tra nhật ký arcreel-env-gate.sh",
     "env_switch_failed": "Chuyển env thất bại (arcreel-env-gate.sh thoát với mã khác 0 hoặc ready probe không bao giờ trả về 2xx); xem nhật ký phía máy chủ để biết cuối stderr",
+    "env_switch_busy": "GPU đang bận với lô khác: không thể giành khoá dùng chung của env (run/env.lock) và không có lượt chuyển nào được thực hiện. Hãy thử lại sau khi lô hiện tại chạy xong",
     "workflow_dispatch_action_not_preflight": "Điểm cuối workflow-dispatch chỉ chấp nhận next_action kiểu PREFLIGHT_ENV_SWITCH",
     # G4 cổng kiểm tra env của mô hình văn bản
     "invalid_env_name": "'{name}' không phải env trên máy này; hiện có: {available}",
