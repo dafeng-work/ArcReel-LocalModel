@@ -1522,3 +1522,25 @@ async def test_send_disconnect_waits_actor_task_done():
     assert actor._task is not None
     assert actor._task.done()
     assert client.disconnected
+
+
+# ---- stderr 分级：unrecognized_model 是预期噪音（Item 2）----------------------
+
+
+class TestStderrBenignMarkers:
+    def test_unrecognized_model_is_not_collected_as_failure_text(self):
+        """本机 qwen-nsfw 必然命中该告警；它不得混进失败消息里冒充真实故障。"""
+        from server.agent_runtime.session_manager import _StartupStderrCollector
+
+        collector = _StartupStderrCollector()
+        collector('[claude-code:unrecognized_model] {"model":"qwen-nsfw","query_source":"sdk"}')
+
+        assert collector.render() == ""
+
+    def test_real_stderr_is_still_collected(self):
+        from server.agent_runtime.session_manager import _StartupStderrCollector
+
+        collector = _StartupStderrCollector()
+        collector("ECONNREFUSED 127.0.0.1:8080")
+
+        assert "ECONNREFUSED" in collector.render()

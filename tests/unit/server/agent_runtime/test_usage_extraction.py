@@ -7,6 +7,8 @@ constructing a SessionManager instance.
 import pytest
 
 from server.agent_runtime.usage_extraction import (
+    CONTEXT_PRESSURE_WARN_RATIO,
+    context_window_pressure,
     extract_assistant_cost,
     extract_float,
     extract_int,
@@ -137,3 +139,25 @@ class TestResolveModel:
         assert resolve_configured_assistant_model({"ANTHROPIC_DEFAULT_OPUS_MODEL": "opus"}) == "opus"
         assert resolve_configured_assistant_model(None) == ""
         assert resolve_configured_assistant_model({}) == ""
+
+
+class TestContextWindowPressure:
+    def test_ratio_against_window(self):
+        # 实测本机：每轮 prompt 66,894 / 窗口 98,304 ≈ 68%
+        assert context_window_pressure(66894, 98304) == pytest.approx(0.6802, abs=1e-3)
+
+    def test_missing_inputs_yield_none(self):
+        assert context_window_pressure(None, 98304) is None
+        assert context_window_pressure(100, None) is None
+        assert context_window_pressure(None, None) is None
+
+    def test_nonpositive_or_negative_inputs_yield_none(self):
+        assert context_window_pressure(100, 0) is None
+        assert context_window_pressure(100, -1) is None
+        assert context_window_pressure(-5, 98304) is None
+
+    def test_observed_turn_stays_below_warn_threshold(self):
+        """当前实测水位应低于告警线 —— 越线说明窗口认知或 auto-compact 出了问题。"""
+        ratio = context_window_pressure(66894, 98304)
+        assert ratio is not None
+        assert ratio < CONTEXT_PRESSURE_WARN_RATIO

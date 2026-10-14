@@ -17,6 +17,7 @@ import os
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from lib.agent.agent_memory_index import INDEX_FILENAME, truncate_memory_index
 from lib.agent.agent_memory_paths import is_valid_memory_user_id, project_memory_dir
@@ -50,11 +51,59 @@ _EMBEDDED_AGENT_TOKEN_EXPIRY_SECONDS = 15 * 60
 CLI_STDOUT_MAX_BUFFER_BYTES = 32 * 1024 * 1024
 
 
+#: 本机 llama-server 的真实上下文窗口 —— 与 ``r9700-env`` 启动参数 ``--ctx-size 98304``
+#: 一致。改了那边记得同步这里，否则 auto-compact 会按错误的窗口排程。
+LOCAL_LLM_CONTEXT_WINDOW_TOKENS = 98304
+
+
+#: 指向本机推理服务的主机名。注意**不能**直接复用
+#: ``lib.backends.text_env_gate.is_loopback_base_url``：那份名单是
+#: ``{127.0.0.1, localhost, ::1, 0.0.0.0}``，用来判「上游不可达是否值得重试」，
+#: 不含 ``host.docker.internal`` —— 而本机部署的 ``ANTHROPIC_BASE_URL`` 恰恰是它
+#: （经 /etc/hosts 指向 127.0.0.1）。语义不同，名单也不同。
+_LOCAL_LLM_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "0.0.0.0", "host.docker.internal"})
+
+
+def _local_llm_window_env(base_url: str | None) -> dict[str, str]:
+    """只在 base_url 指向本机推理服务时，校正 Claude CLI 对上下文窗口的认知。
+
+    **为什么需要**：本地 ``qwen-nsfw`` 是 claude-code 目录里没有的模型，走
+    unknown-model 分支 —— 它对这个模型实际能吃多少 token 并无把握（实测 llama-server
+    只开 98,304，而每轮 prompt 已 66,894）。窗口估错，auto-compact 就永远排在真正的
+    硬限之外，于是压缩不触发、请求先被 llama-server 以 prompt-too-long 拒掉。
+
+    **为什么是这两个变量**（取自 claude-code 2.1.286 的实测行为，非猜测）：
+
+    - ``CLAUDE_CODE_MAX_CONTEXT_TOKENS``：claude-code 自己在 unknown-model 提示里
+      推荐的就是它（「set CLAUDE_CODE_MAX_CONTEXT_TOKENS to its real window」）。
+    - ``CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT``：关掉 unknown-model 分支
+      自带的窗口推定，改用上面这个真值。
+
+    **刻意不用** ``CLAUDE_CODE_AUTO_COMPACT_WINDOW``：它的取值被夹在 [100k, 1M]
+    （解析器里是 ``max(IJe=1e5, value)`` 再 ``min(g, value)``），98,304 表达不出来 ——
+    设了也会被抬到 100k，对本机窗口毫无意义。
+    """
+
+    if not isinstance(base_url, str) or not base_url:
+        return {}
+    try:
+        host = (urlparse(base_url).hostname or "").lower()
+    except ValueError:
+        return {}
+    if host not in _LOCAL_LLM_HOSTS:
+        return {}
+    return {
+        "CLAUDE_CODE_MAX_CONTEXT_TOKENS": str(LOCAL_LLM_CONTEXT_WINDOW_TOKENS),
+        "CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT": "1",
+    }
+
+
 async def load_provider_env_overrides() -> dict[str, str]:
     """构造 options.env 注入字典。
 
     - ANTHROPIC_* 从 DB active credential 取真值
     - 其他 provider env 全部空值覆盖（防御性兜底）
+    - base_url 指向本机推理服务时，附上上下文窗口校正（见 :func:`_local_llm_window_env`）
 
     环境变量名单以 ``env_keys`` 为单一真相源；SDK 子进程只认 env 认证，父进程环境
     又是外部输入，故真值注入与空值围堵是常驻机制而非技术债（见 ADR）。
@@ -66,9 +115,15 @@ async def load_provider_env_overrides() -> dict[str, str]:
     async with async_session_factory() as session:
         anthropic_env = await build_anthropic_env_dict(session)
 
+    # ``ANTHROPIC_MODEL`` 必须等于网关 ``/v1/models`` 实际服务的那个名字（本机只有
+    # ``qwen-nsfw``）。claude-code 会对目录里没有的模型打
+    # ``[claude-code:unrecognized_model]`` —— 那是**预期噪音**，不是故障：它只在运行期
+    # ``set_model`` 切换时才拒绝未知模型，而启动期经 env 传入只告警不阻断。改名会让请求
+    # 与网关实际服务的模型对不上，务必不要为了消掉这条告警去动 credential。
     result = dict(anthropic_env)
     for key in OTHER_PROVIDER_ENV_KEYS:
         result[key] = ""
+    result.update(_local_llm_window_env(result.get("ANTHROPIC_BASE_URL")))
     return result
 
 

@@ -72,6 +72,25 @@ def extract_model_usage_tokens(result_msg: dict[str, Any]) -> tuple[int | None, 
     return input_tokens, output_tokens, usage_tokens
 
 
+#: 上下文压力告警阈值（占窗口比例）。本机 llama-server 只开 98,304，而每轮 prompt
+#: 实测已达 66,894（约 68%）—— 越过这条线就该提示用户开新会话，否则 auto-compact 一旦
+#: 没按时触发，请求会先被 llama-server 以 prompt-too-long 拒掉。
+CONTEXT_PRESSURE_WARN_RATIO = 0.75
+
+
+def context_window_pressure(input_tokens: int | None, window_tokens: int | None) -> float | None:
+    """本轮 prompt 占了上下文窗口多少；任一入参缺失或非正数时返回 ``None``。
+
+    纯函数，便于直接对喂入的 usage 断言 —— 它要回答的正是「这轮还能不能继续塞东西」。
+    """
+
+    if input_tokens is None or window_tokens is None:
+        return None
+    if input_tokens < 0 or window_tokens <= 0:
+        return None
+    return input_tokens / window_tokens
+
+
 def extract_assistant_cost(result_msg: dict[str, Any]) -> float | None:
     total_cost = extract_float(result_msg.get("total_cost_usd"))
     if total_cost is not None:

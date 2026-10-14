@@ -200,24 +200,23 @@ async def ensure_llm_ready(
         _mark_reachable()
         return True
 
-    # 2) 不可达 → 解析文本 env → 切换
+    # 2) 不可达 → 解析文本 env → 切换。
+    #    注意不要在这里用 ``current_env == target_env`` 提前返回 False：那只是
+    #    ``run/current.env`` 里的一个**声明**，env 服务可能已经掉了（2026-10-13 故障：
+    #    llama-server 已退出而文件仍写着 nsfw）。提前返回等于把唯一的恢复机会丢掉，
+    #    于是 env 栈掉线后 ArcReel 永远不自愈。``ensure_env`` 会先探活、确认不通才调闸门。
     resolved_resolve = resolve_text_env if resolve_text_env is not None else globals()["resolve_text_env_async"]
     target_env = await resolved_resolve(read_settings_async=resolved_read_settings)
     current_env = read_current_host_env(DEFAULT_CURRENT_ENV_PATH)
 
     if current_env == target_env:
-        # 已经在文本 env 但 LLM 仍不可达 —— 不切了，返回 False 让上层报错
-        logger.warning(
-            "ensure_llm_ready: LLM unreachable but already at target env %s; not switching",
+        logger.info("ensure_llm_ready: LLM unreachable though current.env says %s; re-launching env", target_env)
+    else:
+        logger.info(
+            "ensure_llm_ready: LLM unreachable (current=%s), switching to %s",
+            current_env,
             target_env,
         )
-        return False
-
-    logger.info(
-        "ensure_llm_ready: LLM unreachable (current=%s), switching to %s",
-        current_env,
-        target_env,
-    )
     try:
         await ensure_env(target_env)
     except EnvSwitchError as exc:

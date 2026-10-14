@@ -189,9 +189,14 @@ async def test_exclusive_mode_unreachable_triggers_switch(monkeypatch: pytest.Mo
 # ---- ensure_llm_ready: 已在目标 env 但 LLM 不可达 → 不切 ----------------------
 
 
-async def test_exclusive_mode_unreachable_at_target_env_does_not_switch(
+async def test_exclusive_mode_unreachable_at_target_env_still_relaunches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """回归：``current.env`` 写着目标 env，不等于服务在跑 —— 上层不得自己短路。
+
+    ``ensure_env`` 内部会先探活、探不通才调闸门；这里断言的是 preflight 不再因为
+    「文件名 == 目标名」就放弃恢复。2026-10-13 的 ECONNREFUSED 即由此短路导致。
+    """
     switched = {"n": 0}
 
     async def _fake_probe(url):
@@ -208,14 +213,43 @@ async def test_exclusive_mode_unreachable_at_target_env_does_not_switch(
 
     monkeypatch.setattr(lp, "probe_llm_endpoint", _fake_probe)
     monkeypatch.setattr(lp, "ensure_env", _fake_ensure_env)
-    monkeypatch.setattr(lp, "read_current_host_env", lambda p: "nsfw")  # 已在目标 env
+    monkeypatch.setattr(lp, "read_current_host_env", lambda p: "nsfw")  # 声称已在目标 env
 
     result = await lp.ensure_llm_ready(
         read_settings_async=_settings_reader({"execution_mode": "exclusive"}),
         resolve_text_env=_fake_resolve("nsfw"),
     )
-    assert result is False  # 已在目标 env 仍不可达 → 报错
-    assert switched["n"] == 0  # 不切
+    assert result is False  # 拉起之后仍探不通 → 报错
+    assert switched["n"] == 1  # 但必须把恢复机会交给 ensure_env
+
+
+async def test_exclusive_mode_recovers_after_relaunch_at_target_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """声明已在目标 env、探活失败 → ensure_env 拉起后探活恢复 → True。"""
+    probes = {"n": 0}
+
+    async def _fake_probe(url):
+        probes["n"] += 1
+        return probes["n"] >= 2  # 第一次失败，拉起后成功
+
+    async def _fake_ensure_env(target, **kwargs):
+        return None
+
+    def _fake_resolve(env: str):
+        async def _resolve(*args, **kwargs) -> str:
+            return env
+
+        return _resolve
+
+    monkeypatch.setattr(lp, "probe_llm_endpoint", _fake_probe)
+    monkeypatch.setattr(lp, "ensure_env", _fake_ensure_env)
+    monkeypatch.setattr(lp, "read_current_host_env", lambda p: "nsfw")
+
+    result = await lp.ensure_llm_ready(
+        read_settings_async=_settings_reader({"execution_mode": "exclusive"}),
+        resolve_text_env=_fake_resolve("nsfw"),
+    )
+    assert result is True
+    assert probes["n"] == 2  # 拉起前探一次、拉起后探一次
 
 
 # ---- TTL 缓存 ----------------------------------------------------------------

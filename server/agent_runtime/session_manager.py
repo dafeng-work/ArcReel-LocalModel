@@ -86,6 +86,13 @@ _INBOX_BACKLOG_WARN_THRESHOLD = 100
 _INBOX_BACKLOG_RESET_THRESHOLD = 50  # 降至此水位以下才重置告警状态，避免抖动刷屏
 
 
+#: claude-code 对「模型目录里没有的名字」会打这类告警。本机 ``qwen-nsfw`` 必然命中。
+#: 实测（claude-code 2.1.286）：它只在**运行期** ``set_model`` 切换时拒绝未知模型
+#: （``catalog_unknown``），而启动期经 ``ANTHROPIC_MODEL`` 传入走容忍分支、只告警不阻断；
+#: 对 prompt cache 与工具调用均无影响。因此归为预期噪音，降级到 debug。
+BENIGN_SDK_STDERR_MARKERS = frozenset({"[claude-code:unrecognized_model]"})
+
+
 class _StartupStderrCollector:
     """在 sdk_session_id 就绪前无损收集 stderr，随后停止并释放。"""
 
@@ -94,6 +101,10 @@ class _StartupStderrCollector:
         self._lines: list[str] = []
 
     def __call__(self, line: str) -> None:
+        if any(marker in line for marker in BENIGN_SDK_STDERR_MARKERS):
+            # 预期噪音，不进 _lines —— 否则它会被 render() 拼进失败消息，和真实故障混为一谈。
+            logger.debug("claude_agent_sdk stderr (benign): %s", redact_diagnostic_text(line))
+            return
         logger.warning("claude_agent_sdk stderr: %s", redact_diagnostic_text(line))
         if self._active:
             self._lines.append(line)

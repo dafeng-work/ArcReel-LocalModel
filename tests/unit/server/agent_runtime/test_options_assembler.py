@@ -18,6 +18,7 @@ import pytest
 from lib.agent.agent_memory_paths import project_memory_dir
 from lib.db.base import DEFAULT_USER_ID
 from lib.infra.data_root_layout import DataRootLayout
+from server.agent_runtime import options_assembler as oa
 from server.agent_runtime.agent_access_policy import AgentAccessPolicy
 from server.agent_runtime.options_assembler import (
     CLI_STDOUT_MAX_BUFFER_BYTES,
@@ -444,3 +445,27 @@ async def test_review_footage_subagent_cannot_call_any_tool_beyond_reading(tmp_p
         assert not await _denied_by_pre_tool_use(options, writer, agent_type="generate-assets", agent_id="agent-2"), (
             f"其他子智能体的 {writer} 不受审片名单约束"
         )
+
+
+# ---- 本机上下文窗口校正 ------------------------------------------------------
+
+
+class TestLocalLlmWindowEnv:
+    """窗口认知错了，auto-compact 就排在 llama-server 的硬限之外，压缩永远不触发。"""
+
+    def test_loopback_base_url_gets_real_window(self):
+        env = oa._local_llm_window_env("http://host.docker.internal:8080")
+        assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == str(oa.LOCAL_LLM_CONTEXT_WINDOW_TOKENS)
+        assert env["CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT"] == "1"
+
+    def test_remote_base_url_is_left_alone(self):
+        """远端供应商的真实窗口由它自己决定，ArcReel 不该插手。"""
+        assert oa._local_llm_window_env("https://api.anthropic.com") == {}
+
+    def test_missing_base_url_is_left_alone(self):
+        assert oa._local_llm_window_env(None) == {}
+        assert oa._local_llm_window_env("") == {}
+
+    def test_declared_window_matches_llama_server_ctx_size(self):
+        """与 r9700-env 启动参数 --ctx-size 98304 对齐；改那边必须同步这里。"""
+        assert oa.LOCAL_LLM_CONTEXT_WINDOW_TOKENS == 98304

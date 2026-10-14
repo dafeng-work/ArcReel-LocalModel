@@ -241,33 +241,52 @@ def gateway_auth_headers(
     return {"Authorization": f"Bearer {token}"} if token else None
 
 
-async def _default_probe_ready(urls: tuple[str, ...] = DEFAULT_READY_PROBE_URLS) -> bool:
+async def _default_probe_ready(
+    urls: tuple[str, ...] = DEFAULT_READY_PROBE_URLS,
+    *,
+    max_attempts: int | None = None,
+) -> bool:
     """轮询给定探活端点，任一 200 且响应体非空即视为后端就绪。
 
     带 token 时附加 ``Authorization: Bearer``：网关自 2026-10-10 起对全部端点强制鉴权，
     无头请求恒为 401，会把「已就绪」误判成「未就绪」并白等满 150s。
+
+    ``max_attempts`` 缺省读模块常量（便于测试 monkey-patch）；显式传 1 表示只探一次、
+    不重试 —— 用于只想快速判真假的场合，避免为一个判定阻塞满 150s。
     """
 
-    client = get_http_client()
+    attempts = max_attempts if max_attempts is not None else globals()["READY_PROBE_MAX_ATTEMPTS"]
     headers = gateway_auth_headers()
     if headers is None:
         logger.info("ready_probe: no gateway token found; probing without auth header")
 
-    for attempt in range(1, READY_PROBE_MAX_ATTEMPTS + 1):
-        for url in urls:
-            try:
-                response = await client.get(url, timeout=READY_PROBE_HTTP_TIMEOUT_SECONDS, headers=headers)
-            except (httpx.HTTPError, OSError) as exc:
-                logger.debug("ready_probe %s attempt %d failed: %s", url, attempt, exc)
-                continue
-            # 响应体非空才算真就绪 —— 与 arcreel-env-gate.sh:wait_ready 的语义一致
-            if response.status_code == 200 and response.content:
-                logger.info("ready_probe %s 200 (attempt %d)", url, attempt)
-                return True
-            logger.debug("ready_probe %s attempt %d -> %s", url, attempt, response.status_code)
-        if attempt < READY_PROBE_MAX_ATTEMPTS:
-            await asyncio.sleep(READY_PROBE_INTERVAL_SECONDS)
-    return False
+    # 共享 client 需要 app 启动时 startup_http_client() 才存在。独立脚本 / 测试 / 早期
+    # 启动阶段回退到一次性 client —— 仅探活，不进连接池。
+    try:
+        client = get_http_client()
+        owns_client = False
+    except RuntimeError:
+        client = httpx.AsyncClient()
+        owns_client = True
+    try:
+        for attempt in range(1, attempts + 1):
+            for url in urls:
+                try:
+                    response = await client.get(url, timeout=READY_PROBE_HTTP_TIMEOUT_SECONDS, headers=headers)
+                except (httpx.HTTPError, OSError) as exc:
+                    logger.debug("ready_probe %s attempt %d failed: %s", url, attempt, exc)
+                    continue
+                # 响应体非空才算真就绪 —— 与 arcreel-env-gate.sh:wait_ready 的语义一致
+                if response.status_code == 200 and response.content:
+                    logger.info("ready_probe %s 200 (attempt %d)", url, attempt)
+                    return True
+                logger.debug("ready_probe %s attempt %d -> %s", url, attempt, response.status_code)
+            if attempt < attempts:
+                await asyncio.sleep(READY_PROBE_INTERVAL_SECONDS)
+        return False
+    finally:
+        if owns_client:
+            await client.aclose()
 
 
 # 测试 / 调用方注入的 seam —— 形如 ``AwaitableCallable[[], bool]``。默认走
@@ -294,7 +313,9 @@ async def ensure_env(
 ) -> EnvSwitchResult:
     """确保宿主 env 是 ``target_env``；不在则触发 ``arcreel-env-gate.sh`` 切换并等就绪。
 
-    并发语义：进程内 ``_SWITCH_LOCK`` 串行化；同 env 第二次调用命中 current == target 立即返回。
+    并发语义：进程内 ``_SWITCH_LOCK`` 串行化；同 env 第二次调用在**探活确认就绪后**立即返回。
+    仅比对 ``current.env`` 的文件名不足以判定「已在目标 env」——该文件可能停留在一个服务
+    已经退出的 env 上，此时必须再调闸门（幂等）把它拉起来，见函数体内注释。
 
     各路径类参数缺省值从模块全局查找（而非函数默认参数）—— 这样测试可以通过
     ``monkeypatch.setattr`` 改写模块级常量，而不需要 patch 函数签名本身。
@@ -313,12 +334,23 @@ async def ensure_env(
     resolved_log_dir = log_dir if log_dir is not None else globals()["DEFAULT_LOG_DIR"]
 
     async with _SWITCH_LOCK:
+        resolved_probe_ready = probe_ready if probe_ready is not None else _ready_probe_for(target)
         current = read_current_host_env(resolved_current_path)
-        if current == target:
-            logger.info("ensure_env: already at %s (no switch needed)", target)
-            return EnvSwitchResult(target_env=target, switched=False, elapsed_seconds=0.0)
 
-        if current != "(unknown)":
+        # ``current.env`` 只记录「上次选了哪个 env」，不代表服务真的在跑。2026-10-13 的
+        # 故障正是 llama-server 已退出、该文件仍写着 nsfw：原先此处直接按文件比对返回，
+        # 于是「声明等于目标」被当成「已经就绪」，掉线后永远没人拉起。所以「已在目标 env」
+        # 必须再探一次活 —— 探不通就落到下面的闸门分支，而 env-gate 对「已声明但未就绪」
+        # 是幂等的（arcreel-env-gate.sh:95「重新拉起（幂等启动）」）。
+        if current == target:
+            if await _ready_probe_for(target, single_shot=True)():
+                logger.info("ensure_env: already at %s and ready (no switch needed)", target)
+                return EnvSwitchResult(target_env=target, switched=False, elapsed_seconds=0.0)
+            logger.warning(
+                "ensure_env: current.env says %s but its service is not reachable; re-launching it through env-gate",
+                target,
+            )
+        elif current != "(unknown)":
             logger.info("ensure_env: current=%s target=%s, switching", current, target)
 
         if not resolved_gate_script.is_file():
@@ -375,7 +407,6 @@ async def ensure_env(
         # env-gate 已 wait_ready —— 这里再补一道探测，吸收「env-gate 内部探测通过的瞬间 GPU
         # 又被另一进程抢走」的边缘情况。``probe_ready`` seam 让测试注入替代函数而不需
         # monkey-patch 私有符号。
-        resolved_probe_ready = probe_ready if probe_ready is not None else _ready_probe_for(target)
         if not await resolved_probe_ready():
             raise EnvSwitchFailed(
                 target_env=target,
@@ -392,11 +423,18 @@ async def ensure_env(
     return EnvSwitchResult(target_env=target, switched=True, elapsed_seconds=elapsed)
 
 
-def _ready_probe_for(target_env: str) -> ProbeReadyFn:
-    """把 :func:`_default_probe_ready` 绑到目标 env 的探测端点上。"""
+def _ready_probe_for(target_env: str, *, single_shot: bool = False) -> ProbeReadyFn:
+    """把 :func:`_default_probe_ready` 绑到目标 env 的探测端点上。
+
+    ``single_shot=True`` 只探一次不重试 —— 用于「current.env 声称已在目标 env」这种
+    只想快速判真假的场合，避免为一个判定阻塞满 ``READY_PROBE_MAX_ATTEMPTS``。
+    """
 
     async def _probe() -> bool:
-        return await _default_probe_ready(probe_urls_for_env(target_env))
+        return await _default_probe_ready(
+            probe_urls_for_env(target_env),
+            max_attempts=1 if single_shot else None,
+        )
 
     return _probe
 

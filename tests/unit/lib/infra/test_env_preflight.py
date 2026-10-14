@@ -64,10 +64,13 @@ def _always_ready_probe() -> pe.ProbeReadyFn:
     return _stub
 
 
-# ---- 已匹配：no-op -----------------------------------------------------
+# ---- 已匹配：service 就绪则 no-op；未就绪则重新拉起 ----------------------------
 
 
-async def test_ensure_env_current_matches_target_is_noop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_ensure_env_current_matches_target_and_ready_is_noop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """current.env 写着 nsfw 且探活 200 → 不调闸门（正常路径，零子进程）。"""
     (tmp_path / "current.env").write_text("nsfw\n", encoding="utf-8")
 
     called = False
@@ -78,12 +81,67 @@ async def test_ensure_env_current_matches_target_is_noop(tmp_path: Path, monkeyp
         return _StubProc(0)
 
     monkeypatch.setattr(pe.asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(pe, "gateway_auth_token", lambda **_kw: "tok")
+    monkeypatch.setattr(pe, "get_http_client", lambda: _StubClient({pe.LLM_PROBE_URL: _StubResponse(200, b"models")}))
 
     result = await pe.ensure_env("nsfw", probe_ready=_always_ready_probe())
     assert called is False
     assert result.switched is False
     assert result.target_env == "nsfw"
     assert result.elapsed_seconds == 0.0
+
+
+async def test_ensure_env_current_matches_target_but_service_down_relaunches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """回归：``current.env`` 只是「上次选了哪个 env」的声明，不代表服务在跑。
+
+    2026-10-13 事故 —— llama-server 已退出而该文件仍写着 nsfw，原实现按文件比对直接
+    返回 no-op，env 栈掉线后因此永远没人拉起。现在探活不通就落回闸门分支
+    （env-gate 对「已声明但未就绪」是幂等的）。
+    """
+    (tmp_path / "current.env").write_text("nsfw\n", encoding="utf-8")
+    (tmp_path / "arcreel-env-gate.sh").touch()
+    (tmp_path / "arcreel-env-gate.sh").chmod(0o755)
+
+    called = False
+
+    async def _fake_exec(*args: Any, **kwargs: Any):
+        nonlocal called
+        called = True
+        return _StubProc(0)
+
+    monkeypatch.setattr(pe.asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(pe, "gateway_auth_token", lambda **_kw: "tok")
+    # 单次快速探活拿不到 200（服务已退出）；闸门拉起后由 probe_ready seam 判就绪。
+    monkeypatch.setattr(pe, "get_http_client", lambda: _StubClient({pe.LLM_PROBE_URL: _StubResponse(502, b"")}))
+
+    result = await pe.ensure_env("nsfw", probe_ready=_always_ready_probe())
+    assert called is True  # 真的调了闸门
+    assert result.switched is True
+    assert result.target_env == "nsfw"
+
+
+async def test_ensure_env_ready_probe_sends_bearer_on_quick_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """快速单次探活也必须带 Bearer —— 网关强制鉴权，无头探测恒 401。
+
+    漏掉鉴权头会让「服务在跑」被恒判为不通，从而每次都白跑一次闸门。
+    """
+    (tmp_path / "current.env").write_text("nsfw\n", encoding="utf-8")
+
+    async def _fake_exec(*args: Any, **kwargs: Any):
+        raise AssertionError("ready probe must short-circuit before spawning the gate")
+
+    monkeypatch.setattr(pe.asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(pe, "gateway_auth_token", lambda **_kw: "secret-token")
+    client = _StubClient({pe.LLM_PROBE_URL: _StubResponse(200, b"models")})
+    monkeypatch.setattr(pe, "get_http_client", lambda: client)
+
+    result = await pe.ensure_env("nsfw", probe_ready=_always_ready_probe())
+    assert result.switched is False
+    assert client.calls[0][1] == {"Authorization": "Bearer secret-token"}
 
 
 # ---- 未匹配：spawn 子进程成功 -------------------------------------------------
