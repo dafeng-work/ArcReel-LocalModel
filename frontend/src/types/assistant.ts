@@ -10,6 +10,24 @@
 
 export type SessionStatus = "idle" | "running" | "completed" | "error" | "interrupted";
 
+/**
+ * 并发槽位与排队的只读快照 —— 对应 `GET /assistant/capacity`。
+ *
+ * 单卡单 slot 推理服务上，第二个 agent 会话必然与第一个互抢推理通道，后端因此改为
+ * 有界排队。这个快照让「发送在途但会话尚未建成」的那段时间变得可见。
+ *
+ * `position` 为 1-based 排队位次；`null` 表示当前不在排队（容量一开始就够，或已出队）——
+ * 前端据此决定亮不亮排队横幅。位次是展示性反馈、弱一致，并发轮询下可能跳动，
+ * 它不参与任何正确性判定。
+ */
+export interface AgentCapacityStatus {
+  active: number;
+  max_concurrent: number;
+  waiting: number;
+  position: number | null;
+  queued_seconds: number | null;
+}
+
 export interface SessionMeta {
   id: string;              // 现在就是 sdk_session_id
   project_name: string;

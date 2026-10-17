@@ -352,13 +352,26 @@ def test_probe_urls_for_llm_env_only_probes_llm_endpoint() -> None:
 
     回归「任一 200 即就绪」的误判：视频 env 起来时 /system_stats 恒 200 而 /v1/models 是 502，
     宽松判据会把「LLM 根本没起」报成就绪。
+
+    ``wide-nsfw`` 曾漏登记：它落在 probe_urls_for_env 的「类别未知」兜底里，
+    于是用了两条端点任一 200 即就绪的宽松判据，恰好绕过本用例要防的误判。
+    新增 env 时这里必须同步，否则白加。
     """
-    for env in ("wide", "nsfw", "novel", "story", "fast", "nsfw-moe"):
+    for env in ("wide", "wide-nsfw", "nsfw", "novel", "story", "fast", "nsfw-moe"):
         assert pe.probe_urls_for_env(env) == (pe.LLM_PROBE_URL,), env
 
 
 def test_probe_urls_for_comfyui_env_only_probes_comfyui_endpoint() -> None:
-    for env in ("video-ltx23-dev", "video-ltx23-sulphur", "image-qwen21", "qwenimage"):
+    for env in (
+        "video-ltx23-dev",
+        "video-ltx23-sulphur",
+        "image-qwen21",
+        "qwenimage",
+        "video-h3",
+        "video-h3-nsfw",
+        "video-h3-ref",
+        "video-h3-lowvram",
+    ):
         assert pe.probe_urls_for_env(env) == (pe.COMFYUI_PROBE_URL,), env
 
 

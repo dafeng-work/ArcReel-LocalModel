@@ -171,8 +171,33 @@ class TestGetSystemConfig:
             "market_github_proxy_prefix",
             "execution_mode",
             "env_mapping",
+            "agent_auto_mode",
         }
         assert set(settings.keys()) == expected_keys
+
+    def test_agent_auto_mode_defaults_on(self):
+        """缺省开启（与上游一致、零回归）；单卡部署需显式关闭。"""
+        mock_svc = _make_mock_svc()
+        with TestClient(_make_app_with_mock(mock_svc)) as client:
+            res = client.get("/api/v1/system/config")
+        assert res.json()["settings"]["agent_auto_mode"] is True
+
+    def test_agent_auto_mode_patch_round_trip(self):
+        """PATCH 可关闭并回读。"""
+        mock_svc = _make_mock_svc()
+        with TestClient(_make_app_with_mock(mock_svc)) as client:
+            res = client.patch("/api/v1/system/config", json={"agent_auto_mode": False})
+            assert res.status_code == 200
+            after = client.get("/api/v1/system/config").json()["settings"]
+        assert after["agent_auto_mode"] is False
+
+    def test_agent_auto_mode_patch_ignores_null(self):
+        """显式 null = 不在本次 patch 范围内，不应被当成「关闭」写入。"""
+        mock_svc = _make_mock_svc()
+        with TestClient(_make_app_with_mock(mock_svc)) as client:
+            client.patch("/api/v1/system/config", json={"agent_auto_mode": None})
+            after = client.get("/api/v1/system/config").json()["settings"]
+        assert after["agent_auto_mode"] is True
 
     def test_options_contain_backend_lists(self):
         mock_svc = _make_mock_svc(ready_providers=["gemini-aistudio"])

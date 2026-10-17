@@ -55,6 +55,7 @@ export type StepIntent =
   | { type: "asset_batch"; episodeId: number }
   | { type: "storyboard_batch"; episodeId: number; kind: StoryboardBatchKind }
   | { type: "create_edit_timeline" }
+  | { type: "preflight_env_switch"; targetEnv: string }
   | { type: "discard_draft"; docType: DraftDocType }
   | { type: "show_surface"; surface: EpisodeSurface }
   | { type: "view_unit"; unitId: string }
@@ -646,8 +647,42 @@ function assetsRow(facts: Facts, ctx: StepListContext): StepRowView {
   };
 }
 
+/**
+ * `preflight_env_switch` 裹着的那一步；不是闸门时原样返回。
+ *
+ * 切 env 只是前置，界面得回到被裹的动作上取行归属与文案——否则闸门一注入，
+ * `ownerRow` 就解不出行，整个「建议的下一步」会一起消失。
+ *
+ * 迭代解包而非递归：args 来自服务端且类型是 `unknown`，畸形响应（preflight 套 preflight）
+ * 在递归写法下会把渲染栈打爆。嵌套超过上限按解不开处理，交由上层退化成无下一步。
+ */
+const MAX_RESUME_DEPTH = 4;
+
+function resumeActionOf(action: WorkflowNextAction): WorkflowNextAction | null {
+  let current = action;
+  for (let depth = 0; depth < MAX_RESUME_DEPTH; depth += 1) {
+    if (current.type !== "preflight_env_switch") return current;
+    const raw = current.args.resume_action;
+    if (!raw || typeof raw !== "object") return null;
+    const { type, args, requested_ids, requires_confirmation, reason } = raw as WorkflowNextAction;
+    if (typeof type !== "string") return null;
+    current = {
+      type,
+      args: args ?? {},
+      requested_ids: Array.isArray(requested_ids) ? requested_ids : [],
+      requires_confirmation: Boolean(requires_confirmation),
+      reason: typeof reason === "string" ? reason : current.reason,
+    };
+  }
+  return null;
+}
+
 /** 下一步挂在哪一行。 */
 function ownerRow(facts: Facts, rows: StepRowView[], action: WorkflowNextAction): StepRowKey | null {
+  if (action.type === "preflight_env_switch") {
+    const resume = resumeActionOf(action);
+    return resume ? ownerRow(facts, rows, resume) : null;
+  }
   switch (action.type) {
     case "resolve_draft":
       return action.args.draft_kind === PROMPT_AUTHORING_DRAFT_KIND ? "prompts" : "plan";
@@ -739,6 +774,35 @@ function buildNext(facts: Facts, rows: StepRowView[], ctx: StepListContext): Nex
   });
 
   switch (action.type) {
+    case "preflight_env_switch": {
+      // 标题与文案取被裹的那一步——闸门只是前置，创作者关心的是「切完能做什么」。
+      // 单独给一个切换入口，且不自动续做 resume_action：续做的多半是付费生成，
+      // 「切环境」这一下不该顺带替用户按下生成。
+      const resume = resumeActionOf(action);
+      if (!resume) return null;
+      const targetEnv = typeof action.args.target_env === "string" ? action.args.target_env : "";
+      if (!targetEnv) return null;
+      const currentEnv = typeof action.args.current_host_env === "string" ? action.args.current_host_env : null;
+      return {
+        ...base,
+        title: t(`workflow:next_title_${resume.type}`, {
+          defaultValue: t(`workflow:action_${resume.type}`, { defaultValue: t("workflow:action_unknown") }),
+        }),
+        detail: t("workflow:next_detail_preflight_env_switch", {
+          env: targetEnv,
+          from: currentEnv ?? t("workflow:preflight_current_env_unknown"),
+        }),
+        primary: [
+          {
+            key: "preflight-env-switch",
+            label: t("workflow:act_preflight_env_switch", { env: targetEnv }),
+            kind: "ai",
+            intent: { type: "preflight_env_switch", targetEnv },
+          },
+        ],
+        alternatives,
+      };
+    }
     case "resolve_draft": {
       const draft = content.drafts.find((d) => d.kind === action.args.draft_kind) ?? content.drafts[0];
       const docType = draft ? draftDocType(draft) : null;

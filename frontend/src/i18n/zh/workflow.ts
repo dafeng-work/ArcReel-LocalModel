@@ -112,6 +112,15 @@ export default {
   'act_view_products': '查看商品',
   'act_view_source': '查看原文',
   'act_open_settings': '去设置',
+
+  // ---- 单卡互斥：分发前切换宿主环境 ----
+  'act_preflight_env_switch': '切换到 {{env}} 环境',
+  'next_detail_preflight_env_switch':
+    '这一步需要宿主运行在 {{env}}（当前 {{from}}）。单卡上 GPU 互斥，切换期间其他模型不可用——切换本身不生成任何内容。',
+  'preflight_current_env_unknown': '未知环境',
+  'preflight_env_switch_done': '已切换到 {{env}}，可以继续下一步了。',
+  'preflight_env_switch_failed': '环境切换失败，请查看服务端日志。',
+  'preflight_env_switch_stale': '计划已变化，没能执行环境切换；已重新求解，请重试。',
   'next_title_resolve_draft_repair': '修复草稿',
   'next_title_resolve_draft_agent': '处理 Agent 未完成的修改',
   'next_title_prepare_script_plan': 'AI 规划脚本',

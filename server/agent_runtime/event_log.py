@@ -44,6 +44,8 @@ ENTRY_SUBTYPE_QUESTION_ANSWER = "question_answer"
 ENTRY_SUBTYPE_AGENT_TURN_FAILURE = "agent_turn_failure"
 ENTRY_SUBTYPE_COMPACT_SUMMARY = "compact_summary"
 ENTRY_SUBTYPE_SUBAGENT_OUTCOME = "subagent_outcome"
+#: 停滞熔断：同一工具反复失败且零产出，由 ArcReel 主动中断本轮（见 stall_guard）。
+ENTRY_SUBTYPE_AGENT_STALLED = "agent_stalled"
 
 SYSTEM_SUBTYPE_SKILL_INVOCATION = "skill_invocation"
 
@@ -143,6 +145,28 @@ def build_interrupt_entry(
 
 def is_interrupt_entry(entry: dict[str, Any]) -> bool:
     return entry.get("type") == ENTRY_TYPE_SYSTEM and entry.get("subtype") == ENTRY_SUBTYPE_INTERRUPT
+
+
+def build_stall_entry(
+    *,
+    tool_name: str,
+    failures: int,
+    uuid: str | None = None,
+    timestamp: str | None = None,
+) -> dict[str, Any]:
+    """构造停滞熔断的 typed 条目（时间线事件，进日志）。
+
+    工具名与失败次数随条目落库，供 UI 直接渲染结论——判定依据是结构化计数，
+    不含错误文案（见 :mod:`server.agent_runtime.stall_guard`）。
+    """
+    return {
+        "type": ENTRY_TYPE_SYSTEM,
+        "subtype": ENTRY_SUBTYPE_AGENT_STALLED,
+        "tool_name": tool_name,
+        "failures": failures,
+        "uuid": uuid or f"stalled-{uuid4().hex}",
+        "timestamp": timestamp or utc_now_iso(),
+    }
 
 
 def _blocks_text(blocks: list[dict[str, Any]]) -> str:

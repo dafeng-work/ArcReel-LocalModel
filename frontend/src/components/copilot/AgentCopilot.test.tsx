@@ -113,6 +113,7 @@ describe("AgentCopilot", () => {
   const withdrawQueuedMessage = vi.fn().mockResolvedValue(undefined);
   const resendQueuedMessage = vi.fn().mockResolvedValue(undefined);
   const sendQueuedMessageNow = vi.fn().mockResolvedValue(undefined);
+  const cancelSend = vi.fn().mockResolvedValue(undefined);
 
   beforeEach(() => {
     useAssistantStore.setState(useAssistantStore.getInitialState(), true);
@@ -123,6 +124,7 @@ describe("AgentCopilot", () => {
     useProjectsStore.getState().setCurrentProject("demo", null);
     mockedUseAssistantSession.mockReturnValue({
       sendMessage,
+      cancelSend,
       rewriteMessage,
       answerQuestion,
       interrupt,
@@ -132,6 +134,57 @@ describe("AgentCopilot", () => {
       withdrawQueuedMessage,
       resendQueuedMessage,
       sendQueuedMessageNow,
+    });
+  });
+
+  describe("并发排队反馈", () => {
+    it("发送在途且服务端回报排队位次时显示横幅与取消按钮", () => {
+      useAssistantStore.setState({
+        currentSessionId: null,
+        sending: true,
+        queueStatus: { active: 1, max_concurrent: 1, waiting: 2, position: 2, queued_seconds: 17 },
+      });
+      render(<AgentCopilot />);
+
+      const banner = screen.getByRole("status");
+      expect(banner).toHaveTextContent("排队中");
+      expect(banner).toHaveTextContent("17");
+      expect(screen.getByRole("button", { name: "取消排队" })).toBeInTheDocument();
+    });
+
+    it("点取消触发 cancelSend", async () => {
+      const user = userEvent.setup();
+      useAssistantStore.setState({
+        currentSessionId: null,
+        sending: true,
+        queueStatus: { active: 1, max_concurrent: 1, waiting: 1, position: 1, queued_seconds: 5 },
+      });
+      render(<AgentCopilot />);
+
+      await user.click(screen.getByRole("button", { name: "取消排队" }));
+
+      expect(cancelSend).toHaveBeenCalledTimes(1);
+    });
+
+    it("capacity 一开始就够（position=null）时不显示横幅，维持纯转圈", () => {
+      useAssistantStore.setState({
+        currentSessionId: null,
+        sending: true,
+        queueStatus: { active: 0, max_concurrent: 5, waiting: 0, position: null, queued_seconds: null },
+      });
+      render(<AgentCopilot />);
+
+      expect(screen.queryByRole("status")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "取消排队" })).not.toBeInTheDocument();
+      // 未排队时仍是发送中转圈按钮
+      expect(screen.getByRole("button", { name: "正在发送" })).toBeInTheDocument();
+    });
+
+    it("不在发送时既无横幅也无取消入口", () => {
+      useAssistantStore.setState({ currentSessionId: null, sending: false, queueStatus: null });
+      render(<AgentCopilot />);
+
+      expect(screen.queryByRole("button", { name: "取消排队" })).not.toBeInTheDocument();
     });
   });
 

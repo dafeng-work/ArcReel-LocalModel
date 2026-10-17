@@ -110,6 +110,15 @@ export default {
   'act_view_products': 'View products',
   'act_view_source': 'View source',
   'act_open_settings': 'Open settings',
+
+  // ---- Single-GPU mutex: switch host env before dispatching ----
+  'act_preflight_env_switch': 'Switch to {{env}}',
+  'next_detail_preflight_env_switch':
+    'This step needs the host on {{env}} (currently {{from}}). On a single GPU the models are mutually exclusive, so nothing else can run during the switch — switching generates nothing by itself.',
+  'preflight_current_env_unknown': 'an unknown env',
+  'preflight_env_switch_done': 'Switched to {{env}}. The next step is ready.',
+  'preflight_env_switch_failed': 'Environment switch failed — check the server log.',
+  'preflight_env_switch_stale': 'The plan changed before the switch ran; it has been re-solved. Please retry.',
   'next_title_resolve_draft_repair': 'Repair the draft',
   'next_title_resolve_draft_agent': 'Handle the Agent\'s unfinished edit',
   'next_title_prepare_script_plan': 'AI plan the script',

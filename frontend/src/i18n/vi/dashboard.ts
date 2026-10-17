@@ -421,6 +421,15 @@ export default {
   'execution_mode_exclusive': 'Đơn máy độc quyền (chuyển env theo bước quy trình)',
   'execution_mode_current_host_env': 'Env hiện tại của máy: {{env}}',
   'execution_mode_host_env_unknown': 'Env hiện tại của máy: không xác định (không đọc được current.env)',
+  'agent_auto_mode_label': 'Chế độ phân quyền auto của Agent',
+  'agent_auto_mode_help':
+    'Khi bật, claude-code gửi thêm một yêu cầu phân loại an toàn bằng LLM trước mỗi lời gọi công cụ. Khi tắt, quyền do hook và quy tắc cho phép cục bộ quyết định.',
+  'agent_auto_mode_warn_on':
+    'Đang bật: có thêm một yêu cầu phân loại LLM trước mỗi lời gọi công cụ. Nếu dịch vụ suy luận chỉ có 1 slot (PARALLEL=1), yêu cầu đó sẽ phải chờ lượt chính và phiên có thể treo lâu mà không có đầu ra — hãy tắt trên triển khai một GPU.',
+  'agent_auto_mode_warn_off':
+    'Đang tắt: không phân loại an toàn bằng LLM. Quyền công cụ do PreToolUse hook, sandbox và quy tắc cho phép quyết định cục bộ. Phiên không còn treo vì chờ timeout của bộ phân loại.',
+  'capacity_queue_waiting': 'Đang xếp hàng: vị trí {{position}} trên {{waiting}}, đã chờ {{seconds}} giây',
+  'capacity_queue_cancel': 'Hủy xếp hàng',
   'env_mapping_section_title': 'Bước quy trình → ánh xạ env',
   'env_mapping_section_help': 'Chỉ có hiệu lực ở chế độ exclusive. Trống = dùng mặc định nội bộ (văn bản→nsfw, hình ảnh→image-qwen21 uc-q8, video→video-ltx23-sulphur).',
   'env_mapping_empty_hint': 'Trống (đang dùng ánh xạ mặc định nội bộ)',

@@ -2749,4 +2749,119 @@ describe("useAssistantSession", () => {
       expect(useAssistantStore.getState().sessions.map((s) => s.id)).toEqual(["session-2", "session-3"]);
     });
   });
+
+/**
+ * 会被 abort 打断的发送替身。
+ *
+ * 真实 fetch 在 signal.abort() 时抛 AbortError；直接把 createDeferred 的 promise 塞给
+ * mock 的话，abort 之后它永远不落定——取消路径的用例会假装挂死。所以这里把信号接进
+ * deferred：abort 时按真实行为 reject。
+ */
+function mockAbortableSend() {
+  const deferred = createDeferred<AcceptedMessageResponse>();
+  const send = vi.spyOn(API, "sendAssistantMessage").mockImplementation(
+    (_project, _content, _sessionId, _images, _clientKey, signal) => {
+      signal?.addEventListener(
+        "abort",
+        () => deferred.reject(new DOMException("Aborted", "AbortError")),
+        { once: true },
+      );
+      return deferred.promise;
+    },
+  );
+  return { deferred, send };
+}
+
+  describe("取消排队", () => {
+    it("服务端说拦得住：中断在途发送、复位 sending、不写错误", async () => {
+      mockIdleSession();
+      // deferred 由 mock 内部在 abort 时 reject，本用例不手动 resolve
+      mockAbortableSend();
+      vi.spyOn(API, "cancelAssistantCapacity").mockResolvedValue({ cancelled: true });
+      vi.spyOn(API, "getAssistantCapacity").mockResolvedValue({
+        active: 1, max_concurrent: 1, waiting: 1, position: 1, queued_seconds: 4,
+      });
+
+      const { result } = renderHook(() => useAssistantSession("demo"));
+      await waitFor(() => expect(FakeSseStream.instances).toHaveLength(1));
+
+      let sendPromise: Promise<boolean> = Promise.resolve(false);
+      act(() => {
+        sendPromise = result.current.sendMessage("排队中的消息");
+      });
+      await waitFor(() => expect(useAssistantStore.getState().sending).toBe(true));
+
+      await act(async () => {
+        await result.current.cancelSend();
+      });
+
+      // 取消是用户主动收手，不是失败：不留错误，也不把幂等键存进重试缓存
+      await act(async () => {
+        expect(await sendPromise).toBe(false);
+      });
+      expect(useAssistantStore.getState().sending).toBe(false);
+      expect(useAssistantStore.getState().error).toBeNull();
+      expect(useAssistantStore.getState().queueStatus).toBeNull();
+    });
+
+    it("服务端说拦不住（槽位已授予）：不中断发送，按正常发送继续等", async () => {
+      mockIdleSession();
+      const { deferred: pending } = mockAbortableSend();
+      vi.spyOn(API, "cancelAssistantCapacity").mockResolvedValue({ cancelled: false });
+
+      const { result } = renderHook(() => useAssistantSession("demo"));
+      await waitFor(() => expect(FakeSseStream.instances).toHaveLength(1));
+
+      let sendPromise: Promise<boolean> = Promise.resolve(false);
+      act(() => {
+        sendPromise = result.current.sendMessage("排队中的消息");
+      });
+      await waitFor(() => expect(useAssistantStore.getState().sending).toBe(true));
+
+      await act(async () => {
+        await result.current.cancelSend();
+      });
+
+      // 已授予的槽位不作废：请求仍在途，sending 保持为 true（即 deferred 未被 abort 打断）
+      expect(useAssistantStore.getState().sending).toBe(true);
+
+      await act(async () => {
+        pending.resolve({
+          session_id: "session-1", status: "accepted", entry: null,
+          queued_message: queuedMessage("u-1", "排队中的消息"),
+        });
+        expect(await sendPromise).toBe(true);
+      });
+      expect(useAssistantStore.getState().sending).toBe(false);
+    });
+
+    it("取消请求本身失败时保守收手：不中断在途发送", async () => {
+      mockIdleSession();
+      const { deferred: pending } = mockAbortableSend();
+      vi.spyOn(API, "cancelAssistantCapacity").mockRejectedValue(new Error("network down"));
+
+      const { result } = renderHook(() => useAssistantSession("demo"));
+      await waitFor(() => expect(FakeSseStream.instances).toHaveLength(1));
+
+      let sendPromise: Promise<boolean> = Promise.resolve(false);
+      act(() => {
+        sendPromise = result.current.sendMessage("排队中的消息");
+      });
+      await waitFor(() => expect(useAssistantStore.getState().sending).toBe(true));
+
+      await act(async () => {
+        await result.current.cancelSend();
+      });
+
+      expect(useAssistantStore.getState().sending).toBe(true);
+
+      await act(async () => {
+        pending.resolve({
+          session_id: "session-1", status: "accepted", entry: null,
+          queued_message: queuedMessage("u-1", "排队中的消息"),
+        });
+        expect(await sendPromise).toBe(true);
+      });
+    });
+  });
 });

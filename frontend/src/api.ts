@@ -23,6 +23,7 @@ import type {
   TaskItem,
   TaskStats,
   SessionMeta,
+  AgentCapacityStatus,
   ImagePayload,
   EntriesResponse,
   AcceptedMessageResponse,
@@ -126,7 +127,15 @@ import type {
 } from "@/types/presentation";
 import type { Asset, AssetType, AssetCreatePayload, AssetListPage, AssetUpdatePayload } from "@/types/asset";
 import type { AgentMemoryOverview, AgentMemoryScope } from "@/types/agent-memory";
-import type { EpisodeNextStep, WorkflowPlan, WorkflowPlanRequest, WorkflowStatus } from "@/types/workflow";
+import type {
+  EpisodeNextStep,
+  WorkflowDispatchRequest,
+  WorkflowDispatchResult,
+  WorkflowNextAction,
+  WorkflowPlan,
+  WorkflowPlanRequest,
+  WorkflowStatus,
+} from "@/types/workflow";
 import type {
   EditTimelinePreviewMedia,
   EditTimelineReadout,
@@ -1863,6 +1872,23 @@ class API {
     });
   }
 
+  /**
+   * 消费 `preflight_env_switch`：由服务端切宿主 env 并探活就绪，返回要继续执行的动作。
+   *
+   * 切 env 走服务端子进程（`arcreel-env-gate.sh`），不经 Agent 的 Bash 沙箱——
+   * 单卡互斥锁 `run/env.lock` 在沙箱内只读，只有这条路能拿到锁。
+   */
+  static async dispatchWorkflowPreflight(
+    projectName: string,
+    nextAction: WorkflowNextAction
+  ): Promise<WorkflowDispatchResult> {
+    const body: WorkflowDispatchRequest = { next_action: nextAction };
+    return this.request(`/projects/${encodeURIComponent(projectName)}/workflow-dispatch`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
   /** 项目层的制作状态：不指定集时，下一步取账本顺序中第一个未完成的集或项目层动作。 */
   static async getWorkflowStatus(
     projectName: string,
@@ -2855,7 +2881,8 @@ class API {
     content: string,
     sessionId?: string | null,
     images?: ImagePayload[],
-    clientKey?: string
+    clientKey?: string,
+    signal?: AbortSignal
   ): Promise<AcceptedMessageResponse> {
     return this.request(`${this.assistantBase(projectName)}/sessions/send`, {
       method: "POST",
@@ -2865,7 +2892,38 @@ class API {
         images: images || [],
         client_key: clientKey || undefined,
       }),
+      signal,
     });
+  }
+
+  /**
+   * 读取并发槽位与排队快照。
+   *
+   * `clientKey` 是本次发送的排队者身份（与服务端 `_ensure_capacity` 的登记表同键），
+   * 带它才能拿回自己的排队位次；不带则只返回全局计数。
+   */
+  static async getAssistantCapacity(
+    projectName: string,
+    clientKey?: string | null
+  ): Promise<AgentCapacityStatus> {
+    const query = clientKey ? `?client_key=${encodeURIComponent(clientKey)}` : "";
+    return this.request(`${this.assistantBase(projectName)}/capacity${query}`, { method: "GET" });
+  }
+
+  /**
+   * 取消排队中的等待者。
+   *
+   * 返回 `cancelled: false` 表示拦不住（槽位已授予 / 从未排队 / 早已出队）——此时调用方
+   * **不要**中断发送请求，已授予的槽位不作废。
+   */
+  static async cancelAssistantCapacity(
+    projectName: string,
+    clientKey: string
+  ): Promise<{ cancelled: boolean }> {
+    return this.request(
+      `${this.assistantBase(projectName)}/capacity/${encodeURIComponent(clientKey)}`,
+      { method: "DELETE" }
+    );
   }
 
   /**

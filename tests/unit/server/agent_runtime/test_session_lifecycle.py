@@ -13,16 +13,28 @@ from server.agent_runtime.session_manager import (
     ManagedSession,
     SessionCapacityError,
     SessionManager,
+    SessionQueueCancelled,
 )
 from server.agent_runtime.session_store import SessionMetaStore
 from tests.fakes import FakeSDKClient, session_state_message
 
 
-def _make_manager(tmp_path: Path) -> SessionManager:
-    """Create a SessionManager with a real MetaStore for testing."""
+def _make_manager(
+    tmp_path: Path,
+    *,
+    capacity_queue_timeout_seconds: float | None = None,
+    capacity_poll_seconds: float | None = None,
+) -> SessionManager:
+    """Create a SessionManager with a real MetaStore for testing.
+
+    ``capacity_*`` 是并发排队的两个量纲的注入 seam：真实默认（300s / 1s）会让排队相关
+    的用例空等到测试超时，压到亚秒级才跑得动。走构造参数而非 monkeypatch 私有模块常量。
+    """
     return SessionManager(
         project_root=tmp_path,
         meta_store=SessionMetaStore(),
+        capacity_queue_timeout_seconds=capacity_queue_timeout_seconds,
+        capacity_poll_seconds=capacity_poll_seconds,
     )
 
 
@@ -314,7 +326,11 @@ class TestEnsureCapacity:
             await mgr.close_session("s_running")
 
     async def test_all_running_raises_capacity_error(self, tmp_path):
-        """所有会话都在 running 时应抛出 SessionCapacityError。"""
+        """所有会话都在 running 时，单轮判定应抛出 SessionCapacityError。
+
+        判定本身在 ``_ensure_capacity_once``；外层 ``_ensure_capacity`` 是它的有界排队
+        包装，会把同一判定重试到超时为止（排队语义见 TestCapacityQueueing）。
+        """
         mgr = _make_manager(tmp_path)
         managed_list: list[ManagedSession] = []
         for i in range(3):
@@ -328,7 +344,7 @@ class TestEnsureCapacity:
                 patch.object(mgr, "_get_max_concurrent", new_callable=AsyncMock, return_value=3),
                 pytest.raises(SessionCapacityError, match="正在进行的会话"),
             ):
-                await mgr._ensure_capacity()
+                await mgr._ensure_capacity_once()
         finally:
             for i in range(3):
                 await mgr.close_session(f"s{i}")
@@ -346,9 +362,59 @@ class TestEnsureCapacity:
                 patch.object(mgr, "_get_max_concurrent", new_callable=AsyncMock, return_value=3),
                 pytest.raises(SessionCapacityError, match="3个"),
             ):
-                await mgr._ensure_capacity()
+                await mgr._ensure_capacity_once()
         finally:
             for i in range(3):
+                await mgr.close_session(f"s{i}")
+
+
+class TestCapacityQueueing:
+    """``_ensure_capacity`` 的有界排队语义：槽位被占满时等待，而不是立刻拒绝。"""
+
+    @staticmethod
+    def _queue_args(seconds: float) -> dict[str, float]:
+        """把排队上限压到测试尺度——真实默认 300s 会让用例空等到超时。"""
+        return {"capacity_queue_timeout_seconds": seconds, "capacity_poll_seconds": 0.01}
+
+    async def test_waits_then_succeeds_when_slot_frees(self, tmp_path):
+        """等待期间槽位被释放 → 排队后正常放行，等待者随即注销。"""
+        mgr = _make_manager(tmp_path, **self._queue_args(5.0))
+        running, _ = _make_managed("s0", status="running")
+        await _start(running)
+        mgr.sessions["s0"] = running
+
+        async def _release():
+            await asyncio.sleep(0.05)
+            mgr.sessions.pop("s0", None)
+
+        releaser = asyncio.create_task(_release())
+        try:
+            with patch.object(mgr, "_get_max_concurrent", new_callable=AsyncMock, return_value=1):
+                await mgr._ensure_capacity()
+                await releaser
+            # 真实产出：放行成功（未抛错）且等待者已从登记表注销——不留残影
+            assert mgr._capacity_waiters == {}
+        finally:
+            if not releaser.done():
+                releaser.cancel()
+            await mgr.close_session("s0")
+
+    async def test_times_out_with_wait_duration_in_message(self, tmp_path):
+        """等满上限后抛错，且消息带出已等待时长——**不静默失败**。"""
+        mgr = _make_manager(tmp_path, **self._queue_args(0.2))
+        for i in range(2):
+            m, _ = _make_managed(f"s{i}", status="running")
+            await _start(m)
+            mgr.sessions[f"s{i}"] = m
+
+        try:
+            with (
+                patch.object(mgr, "_get_max_concurrent", new_callable=AsyncMock, return_value=2),
+                pytest.raises(SessionCapacityError, match="已等待约"),
+            ):
+                await mgr._ensure_capacity()
+        finally:
+            for i in range(2):
                 await mgr.close_session(f"s{i}")
 
 
@@ -469,7 +535,7 @@ class TestNotIdleSessionProtection:
                 patch.object(mgr, "_get_max_concurrent", new_callable=AsyncMock, return_value=1),
                 pytest.raises(SessionCapacityError),
             ):
-                await mgr._ensure_capacity()
+                await mgr._ensure_capacity_once()
 
             assert "s1" in mgr.sessions
             assert client.disconnected is False
@@ -553,3 +619,146 @@ class TestNotIdleSessionProtection:
         with patch.object(mgr, "_get_cleanup_delay", new_callable=AsyncMock, return_value=0):
             await mgr._cleanup_idle("s1")
         assert "s1" not in mgr.sessions
+
+
+class TestCapacityWaiterRegistry:
+    """等待者登记表：位次展示与显式取消。登记表只为展示服务，不参与容量判定。"""
+
+    @staticmethod
+    def _fill(mgr, count: int, *, max_concurrent: int | None = None):
+        """占满槽位，制造排队前提。返回需清理的会话 id 列表。"""
+        ids = [f"s{i}" for i in range(max_concurrent or count)]
+        for sid in ids:
+            managed, _ = _make_managed(sid, status="running")
+            mgr.sessions[sid] = managed
+        return ids
+
+    @staticmethod
+    def _queue_args(seconds: float = 5.0) -> dict[str, float]:
+        return {"capacity_queue_timeout_seconds": seconds, "capacity_poll_seconds": 0.01}
+
+    async def test_no_registration_when_capacity_available(self, tmp_path):
+        """容量一开始就够 → 不登记，也不该被报成「排队中」。"""
+        mgr = _make_manager(tmp_path)
+        with patch.object(mgr, "_get_max_concurrent", new_callable=AsyncMock, return_value=3):
+            await mgr._ensure_capacity("k1")
+        assert mgr._capacity_waiters == {}
+        status = await mgr.get_capacity_status("k1")
+        assert status["position"] is None
+        assert status["waiting"] == 0
+
+    async def test_registers_and_reports_position(self, tmp_path):
+        """排队期间登记等待者，并能读回自己的位次。"""
+        mgr = _make_manager(tmp_path, **self._queue_args())
+        ids = self._fill(mgr, 2, max_concurrent=2)
+        try:
+            with patch.object(mgr, "_get_max_concurrent", new_callable=AsyncMock, return_value=2):
+                waiter_task = asyncio.create_task(mgr._ensure_capacity("k1"))
+                await asyncio.sleep(0.05)
+                status = await mgr.get_capacity_status("k1")
+                assert status["waiting"] == 1
+                assert status["position"] == 1
+                assert status["active"] == 2
+                assert status["max_concurrent"] == 2
+                assert status["queued_seconds"] is not None
+                assert status["queued_seconds"] >= 0
+                # 释放槽位让排队正常结束
+                for sid in ids:
+                    mgr.sessions.pop(sid, None)
+                await asyncio.wait_for(waiter_task, timeout=5)
+            assert mgr._capacity_waiters == {}
+        finally:
+            # _fill 造的是未 _start 的占位会话，没有进程可等；直接摘掉，
+            # 走 close_session 反而会在等一个不存在的 actor 退出。
+            for sid in ids:
+                mgr.sessions.pop(sid, None)
+
+    async def test_position_follows_enqueue_order(self, tmp_path):
+        """多个等待者按入队先后排位次。"""
+        mgr = _make_manager(tmp_path, **self._queue_args())
+        ids = self._fill(mgr, 1, max_concurrent=1)
+        tasks = []
+        try:
+            with patch.object(mgr, "_get_max_concurrent", new_callable=AsyncMock, return_value=1):
+                for key in ("k1", "k2", "k3"):
+                    tasks.append(asyncio.create_task(mgr._ensure_capacity(key)))
+                    await asyncio.sleep(0.03)
+                for index, key in enumerate(("k1", "k2", "k3"), start=1):
+                    assert (await mgr.get_capacity_status(key))["position"] == index
+            for sid in ids:
+                mgr.sessions.pop(sid, None)
+            await asyncio.wait_for(asyncio.gather(*tasks), timeout=5)
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            for sid in ids:
+                if sid in mgr.sessions:
+                    await mgr.close_session(sid)
+
+    async def test_cancel_makes_waiter_exit(self, tmp_path):
+        """取消置位后，等待循环下一拍抛 SessionQueueCancelled 并注销等待者。"""
+        mgr = _make_manager(tmp_path, **self._queue_args(10.0))
+        ids = self._fill(mgr, 1, max_concurrent=1)
+        try:
+            with patch.object(mgr, "_get_max_concurrent", new_callable=AsyncMock, return_value=1):
+                waiter_task = asyncio.create_task(mgr._ensure_capacity("k1"))
+                await asyncio.sleep(0.05)
+                assert mgr.cancel_capacity_wait("k1") is True
+                with pytest.raises(SessionQueueCancelled):
+                    await asyncio.wait_for(waiter_task, timeout=5)
+            assert mgr._capacity_waiters == {}
+        finally:
+            # _fill 造的是未 _start 的占位会话，没有进程可等；直接摘掉，
+            # 走 close_session 反而会在等一个不存在的 actor 退出。
+            for sid in ids:
+                mgr.sessions.pop(sid, None)
+
+    async def test_cancel_misses_returns_false(self, tmp_path):
+        """未知 / 已出队的 client_key → False：调用方据此不 abort，已授予的槽位不作废。"""
+        mgr = _make_manager(tmp_path)
+        assert mgr.cancel_capacity_wait("never-queued") is False
+
+    async def test_registration_cleared_on_timeout(self, tmp_path):
+        """超时路径也必须注销——否则等待者会永久留在表里、位次虚高。"""
+        mgr = _make_manager(tmp_path, **self._queue_args(0.2))
+        ids = self._fill(mgr, 1, max_concurrent=1)
+        try:
+            with (
+                patch.object(mgr, "_get_max_concurrent", new_callable=AsyncMock, return_value=1),
+                pytest.raises(SessionCapacityError),
+            ):
+                await mgr._ensure_capacity("k1")
+            assert mgr._capacity_waiters == {}
+        finally:
+            # _fill 造的是未 _start 的占位会话，没有进程可等；直接摘掉，
+            # 走 close_session 反而会在等一个不存在的 actor 退出。
+            for sid in ids:
+                mgr.sessions.pop(sid, None)
+
+    async def test_anonymous_wait_is_not_registered(self, tmp_path):
+        """没有 client_key 就匿名排队：能等，但不进登记表（前端也就拿不到位次）。"""
+        mgr = _make_manager(tmp_path, **self._queue_args(0.2))
+        ids = self._fill(mgr, 1, max_concurrent=1)
+        try:
+            with (
+                patch.object(mgr, "_get_max_concurrent", new_callable=AsyncMock, return_value=1),
+                pytest.raises(SessionCapacityError),
+            ):
+                await mgr._ensure_capacity()
+            assert mgr._capacity_waiters == {}
+        finally:
+            # _fill 造的是未 _start 的占位会话，没有进程可等；直接摘掉，
+            # 走 close_session 反而会在等一个不存在的 actor 退出。
+            for sid in ids:
+                mgr.sessions.pop(sid, None)
+
+    async def test_status_without_client_key_hides_identity(self, tmp_path):
+        """不带 client_key 只返回全局计数，position 恒为 None，不泄露任何等待者身份。"""
+        mgr = _make_manager(tmp_path)
+        self._fill(mgr, 2, max_concurrent=2)
+        with patch.object(mgr, "_get_max_concurrent", new_callable=AsyncMock, return_value=2):
+            status = await mgr.get_capacity_status()
+        assert status["position"] is None
+        assert status["queued_seconds"] is None
+        assert status["active"] == 2

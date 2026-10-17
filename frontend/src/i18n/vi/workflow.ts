@@ -112,6 +112,15 @@ export default {
   'act_view_products': 'Xem sản phẩm',
   'act_view_source': 'Xem nguyên văn',
   'act_open_settings': 'Mở cài đặt',
+
+  // ---- Khóa chéo GPU đơn: chuyển môi trường host trước khi phân phối ----
+  'act_preflight_env_switch': 'Chuyển sang {{env}}',
+  'next_detail_preflight_env_switch':
+    'Bước này cần host chạy ở {{env}} (hiện tại là {{from}}). Trên một GPU duy nhất các mô hình loại trừ nhau, nên trong lúc chuyển không mô hình nào chạy được — bản thân việc chuyển không tạo ra nội dung nào.',
+  'preflight_current_env_unknown': 'môi trường không xác định',
+  'preflight_env_switch_done': 'Đã chuyển sang {{env}}. Bước tiếp theo đã sẵn sàng.',
+  'preflight_env_switch_failed': 'Chuyển môi trường thất bại — xem log máy chủ.',
+  'preflight_env_switch_stale': 'Kế hoạch đã thay đổi trước khi chuyển; đã tính lại. Vui lòng thử lại.',
   'next_title_resolve_draft_repair': 'Sửa bản nháp',
   'next_title_resolve_draft_agent': 'Xử lý chỉnh sửa chưa xong của Agent',
   'next_title_prepare_script_plan': 'AI lập kế hoạch kịch bản',

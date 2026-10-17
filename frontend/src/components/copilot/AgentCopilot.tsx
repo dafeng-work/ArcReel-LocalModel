@@ -32,6 +32,8 @@ export function AgentCopilot() {
   const sessions = useAssistantStore((s) => s.sessions);
   const isDraftSession = useAssistantStore((s) => s.isDraftSession);
   const sending = useAssistantStore((s) => s.sending);
+  // 发送在途但后端因并发上限排队时的快照；null = 没在排队，横幅不亮
+  const queueStatus = useAssistantStore((s) => s.queueStatus);
   const sessionStatus = useAssistantStore((s) => s.sessionStatus);
   const pendingQuestion = useAssistantStore((s) => s.pendingQuestion);
   const answeringQuestion = useAssistantStore((s) => s.answeringQuestion);
@@ -42,6 +44,7 @@ export function AgentCopilot() {
   const toggleAssistantPanel = useAppStore((s) => s.toggleAssistantPanel);
   const {
     sendMessage,
+    cancelSend,
     rewriteMessage,
     answerQuestion,
     interrupt,
@@ -189,6 +192,8 @@ export function AgentCopilot() {
         disabled={inputDisabled}
         running={isRunning}
         sending={sending}
+        queueStatus={queueStatus}
+        onCancelSend={() => voidCall(cancelSend())}
         placeholder={isRunning ? t("dashboard:generating_queue_hint") : t("dashboard:input_placeholder")}
         onSend={handleSend}
         onInterrupt={() => voidCall(interrupt())}

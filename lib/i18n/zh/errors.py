@@ -632,6 +632,7 @@ MESSAGES = {
     "version_resource_not_found": "资源 '{resource_type}/{resource_id}' 不存在",
     "version_snapshot_path_unmanaged": "'{resource_type}' 的版本记录指向非托管的快照路径，已拒绝该操作",
     "session_capacity_exceeded": "并发会话数已达上限，请稍后再试",
+    "session_queue_cancelled": "已取消排队，本次消息未发送",
     "session_question_unavailable": "会话未运行或没有待回答的问题",
     "rewrite_anchor_invalid": "要改写的消息不在这个会话里，请刷新后重试",
     "rewrite_blocked_by_question": "请先回答对话中的提问卡片，再改写消息",

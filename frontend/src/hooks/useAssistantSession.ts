@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { errMsg, voidCall } from "@/utils/async";
 import { AgentFailureError, API } from "@/api";
@@ -6,6 +6,7 @@ import { uid } from "@/utils/id";
 import type { AttachedImage } from "@/hooks/useImageAttachments";
 import { useAppStore } from "@/stores/app-store";
 import { useAssistantStore } from "@/stores/assistant-store";
+import { useCapacityQueue } from "@/hooks/useCapacityQueue";
 import type { SseStreamHandle } from "@/utils/sse-stream";
 import type {
   DraftDeltaPayload,
@@ -83,6 +84,13 @@ export function useAssistantSession(projectName: string | null) {
   const pendingSendVersionRef = useRef(0);
   // 失败重试复用同一幂等键（同内容签名），成功后清除
   const failedSendRef = useRef<{ clientKey: string; signature: string } | null>(null);
+  // 在途发送的排队者身份与中断句柄。client_key 就是服务端等待者登记表的键，
+  // 拿着它才能轮询回自己的排队位次、也才能取消排队。
+  const [inFlightClientKey, setInFlightClientKey] = useState<string | null>(null);
+  const sendAbortRef = useRef<AbortController | null>(null);
+  // 本次在途发送是否由用户主动取消。取消走 abort，fetch 仍会抛 AbortError 落进 catch——
+  // 没有这个标记，那条路径会被当成「发送失败」写错误、并把幂等键存进重试缓存。
+  const sendCancelledRef = useRef(false);
   // 本页点了「编辑」、内容还没退回输入框的排队消息 id。撤回答复失败后仍保留：Agent 随后若没处理它，
   // 流上的移出事件会带回内容。退回一次即删除，响应与流上的移出谁先到都只退回一次；其他页面不在此列。
   const pendingEditsRef = useRef(new Set<string>());
@@ -295,6 +303,8 @@ export function useAssistantSession(projectName: string | null) {
   // 项目事件流的恢复通知与重连核对：当前会话的新一轮已经从常驻的 entry 流收到，
   // 只在这条流不在时补建（加载中的会话由 loadSession 收尾时建流）。
   const pendingResumeSignals = useAssistantStore((s) => s.sessionResumeSignals);
+  // 仅供排队轮询门控用；逐个 selector 取，避免订阅整店
+  const sending = useAssistantStore((s) => s.sending);
   useEffect(() => {
     if (pendingResumeSignals.length === 0) return;
     // 整批取走：留在全局 store 里，切项目重建回调时会被当成新信号再处理一次
@@ -480,6 +490,11 @@ export function useAssistantSession(projectName: string | null) {
           ? failedSendRef.current.clientKey
           : uid();
 
+      const controller = new AbortController();
+      sendAbortRef.current = controller;
+      sendCancelledRef.current = false;
+      setInFlightClientKey(clientKey);
+
       try {
         const result = await API.sendAssistantMessage(
           projectName!,
@@ -487,6 +502,7 @@ export function useAssistantSession(projectName: string | null) {
           sessionId,  // null for new session
           imagePayload,
           clientKey,
+          controller.signal,
         );
 
         if (pendingSendVersionRef.current !== sendVersion) return false;
@@ -552,9 +568,19 @@ export function useAssistantSession(projectName: string | null) {
         store.getState().setSending(false);
         // 已打开的会话复用常驻流；新会话在这里建立它的第一条流
         connectStream(sessionId);
+        sendAbortRef.current = null;
+        setInFlightClientKey(null);
         return true;
       } catch (err) {
         if (pendingSendVersionRef.current !== sendVersion) return false;
+        sendAbortRef.current = null;
+        setInFlightClientKey(null);
+        // 用户主动取消：不写错误、不记幂等键——那不是失败，也没有内容需要重放
+        if (sendCancelledRef.current) {
+          store.getState().setSending(false);
+          store.getState().setQueueStatus(null);
+          return false;
+        }
         // 失败：无本地合成消息可回滚，仅记录幂等键供重试复用；
         // 在途加载链未被作废，挂起的冷读继续正常落地
         failedSendRef.current = { clientKey, signature };
@@ -887,8 +913,34 @@ export function useAssistantSession(projectName: string | null) {
     writeSessions,
   ]);
 
+  // 取消排队：先问服务端「还拦得住吗」，只有拦得住才 abort 本次发送。
+  //
+  // 顺序是刻意的——反过来（先 abort 再问）会漏掉「槽位恰好刚授予」的窗口，那时会白白
+  // 中断一个已经受理、用户其实已经看见的发送。服务端返回 false 意味着拦不住，此时
+  // 一律按正常发送继续等，不做任何回滚。
+  const cancelSend = useCallback(async () => {
+    const clientKey = inFlightClientKey;
+    if (!projectName || !clientKey) return;
+    let cancelled: boolean;
+    try {
+      ({ cancelled } = await API.cancelAssistantCapacity(projectName, clientKey));
+    } catch {
+      // 问不出来就当拦不住：不 abort 永远不会误伤，abort 才会
+      return;
+    }
+    if (!cancelled) return;
+    sendCancelledRef.current = true;
+    store.getState().setQueueStatus(null);
+    setInFlightClientKey(null);
+    sendAbortRef.current?.abort();
+    // catch 分支会接手复位 sending / inFlightClientKey / 幂等键
+  }, [projectName, inFlightClientKey, store]);
+
+  useCapacityQueue(projectName ?? null, sending, inFlightClientKey);
+
   return {
     sendMessage,
+    cancelSend,
     rewriteMessage,
     answerQuestion,
     interrupt,

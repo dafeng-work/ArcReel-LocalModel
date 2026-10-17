@@ -24,9 +24,11 @@ from server.agent_runtime.event_log import (
     EventLogStore,
     SdkMessageNormalizer,
     build_interrupt_entry,
+    build_stall_entry,
     is_interrupt_entry,
 )
 from server.agent_runtime.failure_observation import failure_observation_json
+from server.agent_runtime.stall_guard import STALL_FAIL_THRESHOLD, StallGuard, StallTrip
 from server.agent_runtime.turn_schema import normalize_block
 
 logger = logging.getLogger(__name__)
@@ -236,11 +238,17 @@ class SessionEntryPipeline:
         session_id_provider: Callable[[], str | None],
         broadcast: Callable[[dict[str, Any]], None],
         project_name_provider: Callable[[], str | None] | None = None,
+        on_stall: Callable[[StallTrip], Awaitable[None]] | None = None,
+        stall_threshold: int = STALL_FAIL_THRESHOLD,
     ) -> None:
         self._store = store
         self._session_id_provider = session_id_provider
         self._project_name_provider = project_name_provider or (lambda: None)
         self._broadcast = broadcast
+        self._on_stall = on_stall
+        # 停滞熔断：同一工具反复失败却零产出时中止会话。阈值取模块默认值，
+        # 测试与调参可经构造参数覆盖。
+        self._stall_guard = StallGuard(stall_threshold)
         # 每会话一个定型器：跨消息关联（Skill tool_use → 注入消息；
         # AskUserQuestion 提问登记 → 答复定型）随会话存续
         self._normalizer = SdkMessageNormalizer()
@@ -333,11 +341,16 @@ class SessionEntryPipeline:
     async def _append_normalized(self, session_id: str, entries: list[dict[str, Any]]) -> None:
         if not entries:
             return
+        tripped: StallTrip | None = None
         for entry in entries:
             if entry.get("type") == "system" and entry.get("subtype") == ENTRY_SUBTYPE_AGENT_TURN_FAILURE:
                 failure = entry.get("failure")
                 if isinstance(failure, dict):
                     logger.warning("agent turn failure failure_observation=%s", failure_observation_json(failure))
+            # 停滞熔断：条目先照常落库广播（时间线要留住现场），触发动作在其后单独执行，
+            # 避免熔断失败反过来吞掉这批条目。
+            if tripped is None:
+                tripped = self._stall_guard.observe(entry)
         if len(entries) == 1 and is_interrupt_entry(entries[0]):
             appended = await self._append_interrupt_deduped(session_id, entries[0])
         else:
@@ -347,6 +360,24 @@ class SessionEntryPipeline:
         for entry in appended:
             if entry.get("type") == ENTRY_TYPE_ASSISTANT and self.draft.clear_for_message(entry.get("message_id")):
                 break
+        if tripped is not None:
+            await self._notify_stall(session_id, tripped)
+
+    async def _notify_stall(self, session_id: str, trip: StallTrip) -> None:
+        """通报停滞判定。回调缺失时只记日志——守卫本身不负责中断，会话层才有上下文。"""
+        logger.warning(
+            "停滞熔断触发 session_id=%s tool=%s failures=%s last=%s",
+            session_id,
+            trip.tool_name,
+            trip.failures,
+            trip.last_timestamp,
+        )
+        if self._on_stall is None:
+            return
+        try:
+            await self._on_stall(trip)
+        except Exception:
+            logger.exception("停滞熔断回调失败 session_id=%s tool=%s", session_id, trip.tool_name, exc_info=True)
 
     async def append_user_entry(self, entry: dict[str, Any], *, client_key: str | None = None) -> None:
         """排队消息被 Agent 接纳：写入用户条目并广播，条目排在此前已产生的输出之后。
@@ -364,6 +395,28 @@ class SessionEntryPipeline:
             logger.exception("用户条目写入事件日志失败 session_id=%s entry_uuid=%s", session_id, entry.get("uuid"))
             return
         self._broadcast({"type": "log_entry", "session_id": session_id, "entry": authoritative})
+
+    async def append_stall(self, trip: StallTrip) -> list[dict[str, Any]]:
+        """停滞结论的直接写入点。
+
+        写失败只记日志不抛出——结论落不进去不该反过来放弃随后的中断动作。
+        """
+        session_id = self._session_id_provider()
+        if not session_id:
+            return []
+        entry = build_stall_entry(
+            tool_name=trip.tool_name,
+            failures=trip.failures,
+            timestamp=trip.last_timestamp,
+        )
+        try:
+            appended = await self._append_with_retry(session_id, [entry])
+        except Exception:
+            logger.exception("停滞结论写入事件日志失败 session_id=%s tool=%s", session_id, trip.tool_name)
+            return []
+        for item in appended:
+            self._broadcast({"type": "log_entry", "session_id": session_id, "entry": item})
+        return appended
 
     async def append_interrupt(self) -> list[dict[str, Any]]:
         """中断动作的直接写入点（终态路径：SDK 回显不再经 inbox 到达时补写）。

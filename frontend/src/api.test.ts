@@ -1790,3 +1790,50 @@ describe("character derivative endpoints", () => {
     expect(fetchMock.mock.calls[0][1].body).toBeUndefined();
   });
 });
+
+describe("并发容量查询（排队位次）", () => {
+  it("getAssistantCapacity 带 client_key 时把身份放进 query", async () => {
+    const requestSpy = vi.spyOn(API, "request").mockResolvedValue({} as never);
+
+    await API.getAssistantCapacity("demo", "ck-1");
+
+    expect(requestSpy).toHaveBeenCalledWith(
+      "/projects/demo/assistant/capacity?client_key=ck-1",
+      { method: "GET" },
+    );
+  });
+
+  it("getAssistantCapacity 不带 client_key 时不追加 query", async () => {
+    const requestSpy = vi.spyOn(API, "request").mockResolvedValue({} as never);
+
+    await API.getAssistantCapacity("demo");
+    await API.getAssistantCapacity("demo", null);
+
+    for (const [path] of requestSpy.mock.calls) {
+      expect(path).toBe("/projects/demo/assistant/capacity");
+    }
+  });
+
+  it("cancelAssistantCapacity 走 DELETE 且 client_key 编码进路径", async () => {
+    const requestSpy = vi.spyOn(API, "request").mockResolvedValue({ cancelled: true } as never);
+
+    await expect(API.cancelAssistantCapacity("demo", "a b")).resolves.toEqual({ cancelled: true });
+
+    expect(requestSpy).toHaveBeenCalledWith(
+      "/projects/demo/assistant/capacity/a%20b",
+      { method: "DELETE" },
+    );
+  });
+
+  it("sendAssistantMessage 把 signal 透传给请求", async () => {
+    const requestSpy = vi.spyOn(API, "request").mockResolvedValue({} as never);
+    const controller = new AbortController();
+
+    await API.sendAssistantMessage("demo", "hi", null, [], "ck-1", controller.signal);
+
+    expect(requestSpy).toHaveBeenCalledWith(
+      "/projects/demo/assistant/sessions/send",
+      expect.objectContaining({ signal: controller.signal }),
+    );
+  });
+});

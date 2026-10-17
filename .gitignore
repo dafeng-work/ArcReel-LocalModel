@@ -50,7 +50,8 @@ frontend/dist/
 frontend/.vite/
 frontend/test-results/
 frontend/playwright-report/
-frontend/.pnpm-store/   # pnpm content-addressable store（pnpm fetch/fullsync 缓存）
+# pnpm content-addressable store（pnpm fetch/fullsync 缓存）
+frontend/.pnpm-store/
 *.tsbuildinfo
 
 # Git backup
@@ -100,3 +101,6 @@ docs/verification-reports/
 
 # mutmut 变异测试的工作副本（`mutmut run` 生成的整仓复制品）
 mutants/
+
+# 主机直跑（VIBE-CODING runbook）产生的运行时日志与 pid
+.run/

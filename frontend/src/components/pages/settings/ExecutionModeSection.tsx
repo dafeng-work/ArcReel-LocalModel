@@ -1,14 +1,15 @@
 import { useTranslation } from "react-i18next";
-import { Loader2, Play } from "lucide-react";
+import { Loader2, Play, TriangleAlert } from "lucide-react";
 import { useId, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Switch } from "@/components/ui/switch";
 import { InlineWarning } from "@/components/shared/InlineWarning";
 import { API } from "@/api";
 import type { PreflightTestResponse } from "@/types/system";
 
-/** G3 单机单卡互斥模式的「执行模式」Section —— 单选 Radio + 当前 env 显示 + 测试 preflight 按钮。 */
+/** G3 单机单卡互斥模式的「执行模式」Section —— 单选 Radio + auto 开关 + 当前 env 显示 + 测试 preflight 按钮。 */
 
 export type ExecutionMode = "multi" | "exclusive";
 
@@ -16,11 +17,21 @@ interface Props {
   value: ExecutionMode;
   onChange: (next: ExecutionMode) => void;
   currentHostEnv: string | null;
+  /** auto 权限模式开关；true = 每次工具调用前多一次 LLM 安全分类请求。 */
+  autoMode: boolean;
+  onAutoModeChange: (next: boolean) => void;
 }
 
-export function ExecutionModeSection({ value, onChange, currentHostEnv }: Props) {
+export function ExecutionModeSection({
+  value,
+  onChange,
+  currentHostEnv,
+  autoMode,
+  onAutoModeChange,
+}: Props) {
   const { t } = useTranslation("dashboard");
   const groupId = useId();
+  const autoId = useId();
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<PreflightTestResponse | null>(null);
   const [testError, setTestError] = useState<string | null>(null);
@@ -65,6 +76,31 @@ export function ExecutionModeSection({ value, onChange, currentHostEnv }: Props)
             </Label>
           </div>
         </RadioGroup>
+      </div>
+
+      <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-3">
+        <div className="flex items-start justify-between gap-3">
+          <Label htmlFor={autoId} className="flex flex-col">
+            <span className="mb-0.5 text-sm font-medium">{t("dashboard:agent_auto_mode_label")}</span>
+            <span className="text-xs text-muted-foreground">{t("dashboard:agent_auto_mode_help")}</span>
+          </Label>
+          <Switch id={autoId} checked={autoMode} onCheckedChange={onAutoModeChange} />
+        </div>
+        {/*
+          警示文字常驻可见，不能只藏在 help 里：开关是硬命令，ArcReel 不会替单卡部署
+          自动降级 —— 开着就是会多一次 LLM 分类请求，忘了关就会重现空转死锁。开启态用
+          destructive 配色让后果一眼可见。
+        */}
+        <p
+          className={
+            autoMode
+              ? "flex items-start gap-1.5 rounded-md bg-destructive/10 px-2 py-1.5 text-xs text-destructive"
+              : "flex items-start gap-1.5 rounded-md bg-muted/60 px-2 py-1.5 text-xs text-muted-foreground"
+          }
+        >
+          <TriangleAlert aria-hidden className="mt-0.5 size-3.5 shrink-0" data-icon="inline-start" />
+          <span>{autoMode ? t("dashboard:agent_auto_mode_warn_on") : t("dashboard:agent_auto_mode_warn_off")}</span>
+        </p>
       </div>
 
       <div className="flex items-center gap-3 rounded-lg border border-border bg-card px-3 py-2 text-sm">

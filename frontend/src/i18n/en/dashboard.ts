@@ -418,6 +418,15 @@ export default {
   'execution_mode_exclusive': 'Single-machine exclusive (switch env per workflow step)',
   'execution_mode_current_host_env': 'Current host env: {{env}}',
   'execution_mode_host_env_unknown': 'Current host env: unknown (current.env unreadable)',
+  'agent_auto_mode_label': 'Agent auto permission mode',
+  'agent_auto_mode_help':
+    'When on, claude-code sends an extra LLM safety-classification request before every tool call. When off, permissions are decided locally by hooks and allow rules.',
+  'agent_auto_mode_warn_on':
+    'On: an extra LLM classification request before every tool call. If the inference server has only 1 slot (PARALLEL=1), that request waits on the main turn and the session can stall for a long time with no output — turn this off on single-GPU deployments.',
+  'agent_auto_mode_warn_off':
+    'Off: no LLM safety classification. Tool permissions are decided locally by PreToolUse hooks, the sandbox, and allow rules. Sessions no longer stall waiting on a classifier timeout.',
+  'capacity_queue_waiting': 'Queued: position {{position}} of {{waiting}} waiting, {{seconds}}s elapsed',
+  'capacity_queue_cancel': 'Cancel queue',
   'env_mapping_section_title': 'Workflow step → env mapping',
   'env_mapping_section_help': 'Used only in exclusive mode. Empty = use built-in defaults (text→nsfw, image→image-qwen21 uc-q8, video→video-ltx23-sulphur).',
   'env_mapping_empty_hint': 'Empty (using built-in default mapping)',

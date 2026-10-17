@@ -169,7 +169,7 @@ def test_non_loopback_base_urls_rejected(url: str | None) -> None:
 
 def test_non_string_base_url_is_tolerated() -> None:
     """测试替身（Mock）的属性不是字符串，不该在这里炸掉。"""
-    assert is_loopback_base_url(object()) is False  # type: ignore[arg-type]
+    assert is_loopback_base_url(object()) is False
 
 
 # ---- 上游不可达分类 ----------------------------------------------------------

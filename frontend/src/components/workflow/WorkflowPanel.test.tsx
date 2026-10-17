@@ -1023,3 +1023,129 @@ describe("WorkflowPanel 刷新纪律", () => {
     await waitFor(() => expect(spy).toHaveBeenCalledTimes(2));
   });
 });
+
+describe("WorkflowPanel 单卡互斥的 env 前置闸门", () => {
+  const preflightNext = (targetEnv: string, currentEnv: string): WorkflowNextAction =>
+    nextAction("preflight_env_switch", {
+      args: {
+        target_env: targetEnv,
+        current_host_env: currentEnv,
+        resume_action: nextAction("generate_asset_sheets", { requested_ids: ["庭院"] }),
+      },
+      requested_ids: ["庭院"],
+      reason: "workflow step 'asset_sheets' requires env image-qwen21",
+    });
+
+  it("闸门注入时下一步仍落在被裹的那一行，给出切换入口而不是整块消失", async () => {
+    await renderExpanded(
+      scenario({
+        next: preflightNext("image-qwen21", "wide-nsfw"),
+        content: { referenced_assets_without_sheet: ["庭院"] },
+      }),
+    );
+    // 标题复述被裹的动作——创作者关心的是「切完能做什么」，不是闸门本身
+    // （标题经 next_step 模板插值，不是独立文本节点，按子串匹配）
+    expect(await screen.findByText(/下一步：生成资产图/)).toBeInTheDocument();
+    expect(screen.queryByText(/下一步：分发前切换宿主环境/)).not.toBeInTheDocument();
+    expect(screen.getByText(/这一步需要宿主运行在 image-qwen21（当前 wide-nsfw）/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "切换到 image-qwen21 环境" })).toBeInTheDocument();
+  });
+
+  it("切换成功后提示并重新求解计划，不顺带替用户按下付费生成", async () => {
+    const dispatch = vi.spyOn(API, "dispatchWorkflowPreflight").mockResolvedValue({
+      ok: true,
+      switched_to: "image-qwen21",
+      elapsed_seconds: 42,
+      resume_action: nextAction("generate_asset_sheets"),
+      error_code: null,
+      error_message: null,
+    });
+    const previewAssets = vi
+      .spyOn(API, "previewAssetSheetBatch")
+      .mockResolvedValue({ targets: [], skipped: [], estimated_cost: null });
+    const pushToast = vi.spyOn(useAppStore.getState(), "pushToast");
+    const plan = scenario({
+      next: preflightNext("image-qwen21", "wide-nsfw"),
+      content: { referenced_assets_without_sheet: ["庭院"] },
+    });
+    const getPlan = mockPlan(plan);
+    render(<WorkflowPanel projectName="proj" episode={1} />);
+    fireEvent.click(await screen.findByRole("button", { name: /制作进度/ }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "切换到 image-qwen21 环境" }));
+
+    await waitFor(() => expect(dispatch).toHaveBeenCalledWith("proj", expect.objectContaining({ type: "preflight_env_switch" })));
+    await waitFor(() => expect(pushToast).toHaveBeenCalledWith("已切换到 image-qwen21，可以继续下一步了。", "success"));
+    // 切成功后重新求解：闸门不再是 next_action，被裹的那一步接管
+    await waitFor(() => expect(getPlan.mock.calls.length).toBeGreaterThan(1));
+    // 续做的多半是付费生成，「切环境」这一下不该替用户按下去
+    expect(previewAssets).not.toHaveBeenCalled();
+  });
+
+  it("切换失败时直接展示服务端已本地化的理由，且不重新求解计划", async () => {
+    const dispatch = vi.spyOn(API, "dispatchWorkflowPreflight").mockResolvedValue({
+      ok: false,
+      switched_to: null,
+      elapsed_seconds: null,
+      resume_action: null,
+      error_code: "env_switch_busy",
+      error_message: "GPU 正被另一个批次占用：未取得 env 互斥锁（run/env.lock），本次未做任何切换；请等当前批次跑完后重试",
+    });
+    const pushToast = vi.spyOn(useAppStore.getState(), "pushToast");
+    const plan = scenario({
+      next: preflightNext("image-qwen21", "wide-nsfw"),
+      content: { referenced_assets_without_sheet: ["庭院"] },
+    });
+    const getPlan = mockPlan(plan);
+    render(<WorkflowPanel projectName="proj" episode={1} />);
+    fireEvent.click(await screen.findByRole("button", { name: /制作进度/ }));
+    const callsBefore = getPlan.mock.calls.length;
+
+    fireEvent.click(await screen.findByRole("button", { name: "切换到 image-qwen21 环境" }));
+
+    await waitFor(() => expect(pushToast).toHaveBeenCalledWith(expect.stringContaining("GPU 正被另一个批次占用"), "error"));
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    // 没切成，下一步仍是这一步；重算只会把它顶掉再顶回来
+    expect(getPlan.mock.calls.length).toBe(callsBefore);
+  });
+
+  it("畸形响应（preflight 套 preflight）解不开时退化成无下一步，不把渲染栈打爆", async () => {
+    const inner = nextAction("generate_asset_sheets", { requested_ids: ["庭院"] });
+    let nested = inner;
+    for (let i = 0; i < 8; i += 1) {
+      nested = nextAction("preflight_env_switch", { args: { target_env: `env${i}`, resume_action: nested } });
+    }
+    const plan = scenario({
+      next: nested,
+      content: { referenced_assets_without_sheet: ["庭院"] },
+    });
+    mockPlan(plan);
+    render(<WorkflowPanel projectName="proj" episode={1} />);
+    fireEvent.click(await screen.findByRole("button", { name: /制作进度/ }));
+    // 解不开就不给切换入口：宁可少一个入口，也不要一个指向未知 env 的入口
+    expect(screen.queryByRole("button", { name: /切换到 env\d+ 环境/ })).not.toBeInTheDocument();
+  });
+
+  it("计划已经变了时按不可用处理，不猜一个 env 去切", async () => {
+    const dispatch = vi.spyOn(API, "dispatchWorkflowPreflight").mockResolvedValue({
+      ok: false,
+      switched_to: null,
+      elapsed_seconds: null,
+      resume_action: null,
+      error_code: "workflow_dispatch_action_not_preflight",
+      error_message: "这个动作不是 env 前置闸门",
+    });
+    const pushToast = vi.spyOn(useAppStore.getState(), "pushToast");
+    // 计划的 next_action 已经不是闸门：面板这一轮仍按旧投影渲染，点击时以计划为准
+    const plan = scenario({
+      next: preflightNext("image-qwen21", "wide-nsfw"),
+      content: { referenced_assets_without_sheet: ["庭院"] },
+    });
+    mockPlan(plan);
+    render(<WorkflowPanel projectName="proj" episode={1} />);
+    fireEvent.click(await screen.findByRole("button", { name: /制作进度/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "切换到 image-qwen21 环境" }));
+    await waitFor(() => expect(dispatch).toHaveBeenCalled());
+    expect(pushToast).not.toHaveBeenCalledWith(expect.stringContaining("GPU 正被"), "error");
+  });
+});

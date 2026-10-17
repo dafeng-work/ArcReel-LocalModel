@@ -33,6 +33,10 @@ from lib.backends.generation_type_buckets import (
     custom_model_buckets,
 )
 from lib.backends.http_status_errors import raise_for_status_redacted
+from lib.config.agent_auto_mode import (
+    AGENT_AUTO_MODE_SETTING,
+    parse_agent_auto_mode,
+)
 from lib.config.dispatcher_schema import (
     list_available_envs,
     parse_env_mapping,
@@ -360,6 +364,9 @@ class SystemConfigPatchRequest(BaseModel):
     # ``env_mapping``: JSON 字符串，step-id → 宿主机 env 名映射；空串 = 用 ``lib.config.dispatcher_schema.DEFAULT_ENV_MAPPING``。
     execution_mode: str | None = None
     env_mapping: str | None = None
+    # Agent auto 权限模式（claude-code 的 LLM 安全分类器）。默认 True = 与上游一致；
+    # 单卡单 slot 部署需设为 False，否则分类请求与主回合自锁（成因见 lib.config.agent_auto_mode）。
+    agent_auto_mode: bool | None = None
 
 
 class PreflightTestRequest(BaseModel):
@@ -461,6 +468,9 @@ async def get_system_config(
         # effective_env_mapping 决定是否回退到 dispatcher_schema.DEFAULT_ENV_MAPPING。
         "execution_mode": parse_execution_mode(all_s.get("execution_mode", "")),
         "env_mapping": all_s.get("env_mapping", ""),
+        # Agent auto 权限模式：缺省 true，与上游 ArcReel 行为一致（上游不设 permission_mode，
+        # CLI 默认即 auto）。单卡单 slot 部署需显式关闭，成因见 lib.config.agent_auto_mode。
+        "agent_auto_mode": parse_agent_auto_mode(all_s.get(AGENT_AUTO_MODE_SETTING)),
     }
 
     options = await _build_options(svc, session, locale)
@@ -692,6 +702,11 @@ async def patch_system_config(
         except ValueError as exc:
             raise UnprocessableError("execution_mode_invalid") from exc
         await svc.set_setting("execution_mode", mode)
+
+    # Agent auto 权限模式开关。存 "true"/"false" 字符串（与 video_generate_audio 同口径）；
+    # None = 不在本次 patch 范围内，保持原值不动——不能把「没传」和「设为关闭」混为一谈。
+    if "agent_auto_mode" in patch and patch["agent_auto_mode"] is not None:
+        await svc.set_setting(AGENT_AUTO_MODE_SETTING, "true" if patch["agent_auto_mode"] else "false")
 
     if "env_mapping" in patch and patch["env_mapping"] is not None:
         raw = str(patch["env_mapping"] or "")

@@ -328,6 +328,28 @@ export function WorkflowPanel({ projectName, episode, onViewUnit, onRegenerate, 
             void refreshPlan(projectName, episode);
             break;
           }
+          case "preflight_env_switch": {
+            // 入口要的是完整的 next_action（服务端按它取 target_env 并原样回传 resume_action），
+            // 这里取的是同一份计划的 next_action；面板与计划同源，过期时按不可用处理而不是猜一个 env。
+            const action = shown?.next_action;
+            if (!action || action.type !== "preflight_env_switch") {
+              pushToast(t("workflow:preflight_env_switch_stale"), "error");
+              void refreshPlan(projectName, episode);
+              break;
+            }
+            const result = await API.dispatchWorkflowPreflight(projectName, action);
+            if (!result.ok) {
+              // error_message 由服务端按用户语言渲染，直接展示；不重新求解计划——
+              // 没切成，下一步仍是这一步，重算只会把它顶掉再顶回来。
+              pushToast(result.error_message ?? t("workflow:preflight_env_switch_failed"), "error");
+              break;
+            }
+            pushToast(t("workflow:preflight_env_switch_done", { env: result.switched_to ?? intent.targetEnv }), "success");
+            // 切成功后重新求解：闸门不再是 next_action，被裹的那一步接管，按它自己的入口走
+            // （付费生成仍需用户单独点一次）。
+            void refreshPlan(projectName, episode);
+            break;
+          }
           case "start_blank_script":
             await API.startBlankScript(projectName, episodeId);
             await refreshAfterWrite(projectName, t);

@@ -82,7 +82,7 @@ GATE_LOCK_BUSY_EXIT_CODE: Final[int] = 75
 #: 之所以必须分类而不能「任一 200 即就绪」：单机上 ComfyUI 与 LLM 是两套互斥 env，但网关
 #: 两条端点同时活着是常态（视频 env 起来时 ``/system_stats`` 就是 200 而 ``/v1/models`` 是
 #: 502）。按「任一 200」判定会把「LLM 未就绪」误判成就绪 —— 正是本缺陷要修的那类误判。
-_LLM_ENVS: Final[frozenset[str]] = frozenset({"fast", "novel", "story", "nsfw", "nsfw-moe", "wide"})
+_LLM_ENVS: Final[frozenset[str]] = frozenset({"fast", "novel", "story", "nsfw", "nsfw-moe", "wide", "wide-nsfw"})
 _COMFYUI_ENVS: Final[frozenset[str]] = frozenset(
     {
         "video-fast",
@@ -94,6 +94,12 @@ _COMFYUI_ENVS: Final[frozenset[str]] = frozenset(
         "video-ltx23-sulphur",
         "video-ltx25",
         "video-ltx25-uc",
+        # 2026-10-17 新增：MiniMax-H3 四档，ComfyUI 实例在 8194-8197。
+        # 与 bin/arcreel-env-gate.sh 的 probe_for_env 同步（那边已先行加入）。
+        "video-h3",
+        "video-h3-nsfw",
+        "video-h3-ref",
+        "video-h3-lowvram",
         "image-qwen21",
         "qwenimage",
     }

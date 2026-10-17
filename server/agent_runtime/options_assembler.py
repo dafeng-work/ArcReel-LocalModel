@@ -27,6 +27,7 @@ from lib.agent.agent_session_store import (
     session_store_mode,
 )
 from lib.agent.agent_session_store.store import DbSessionStore
+from lib.config.agent_auto_mode import PermissionModeValue, permission_mode_for, resolve_agent_auto_mode
 from lib.db.base import DEFAULT_USER_ID
 from lib.db.engine import async_session_factory as default_async_session_factory
 from lib.i18n import DEFAULT_LOCALE, LOCALE_LANGUAGE_MAP
@@ -151,6 +152,7 @@ class OptionsAssembler:
         access_policy_provider: Callable[[], AgentAccessPolicy],
         max_turns_provider: Callable[[], int | None],
         resolve_project_cwd: Callable[[str], Path],
+        permission_mode_provider: Callable[[], Awaitable[PermissionModeValue]] | None = None,
         provider_env_loader: Callable[[], Awaitable[dict[str, str]]] | None = None,
         session_factory_provider: Callable[[], Any] | None = None,
         user_id_provider: Callable[[], str] | None = None,
@@ -162,6 +164,7 @@ class OptionsAssembler:
         self._access_policy_provider = access_policy_provider
         self._max_turns_provider = max_turns_provider
         self._resolve_project_cwd = resolve_project_cwd
+        self._permission_mode_provider = permission_mode_provider
         self._provider_env_loader = provider_env_loader
         self._session_factory_provider = session_factory_provider or (lambda: None)
         self._user_id_provider = user_id_provider or (lambda: DEFAULT_USER_ID)
@@ -174,6 +177,18 @@ class OptionsAssembler:
         global 以便测试 patch）；构造时注入 ``provider_env_loader`` 则改用注入源。"""
         loader = self._provider_env_loader or load_provider_env_overrides
         return await loader()
+
+    async def resolve_permission_mode(self) -> PermissionModeValue:
+        """解析本次会话的 SDK ``permission_mode``。
+
+        未注入 ``permission_mode_provider`` 时回退到「进程 env 覆盖 + 默认开启」，
+        与部署路径同语义（见 :mod:`lib.config.agent_auto_mode`）——单测与独立脚本
+        因此不必各自造一套判定。
+        """
+        provider = self._permission_mode_provider
+        if provider is None:
+            return permission_mode_for(resolve_agent_auto_mode(None))
+        return await provider()
 
     async def _build_append_prompt(self, project_name: str, locale: str = DEFAULT_LOCALE) -> str:
         """Build the append portion for SystemPromptPreset.
@@ -426,6 +441,17 @@ class OptionsAssembler:
             resume=resume_id,
             session_id=session_id,
             can_use_tool=can_use_tool,
+            # 权限模式由 ``agent_auto_mode`` 开关派生（env > DB > 默认开启，见
+            # lib.config.agent_auto_mode）。关闭时显式钉成 ``default``：工具权限改由本文件
+            # 的 PreToolUse hook + sandbox + allowed_tools allow 规则 + ``can_use_tool``
+            # default-deny 兜底裁决，全程本地确定性，不经过 LLM。
+            #
+            # 为什么必须是 ``default``：auto 模式在每次工具调用前会额外发一次 LLM 安全
+            # 分类请求，与主回合共用同一条推理通道。本机 ``PARALLEL=1`` 是单 slot，分类
+            # 请求排在**发起它的那一回合**之后，而那一回合又要等分类结果才继续——三者闭环，
+            # 构成自锁死锁；CLI 还把该超时归类为「可重试」，模型于是 sleep+重试无限空转。
+            # 显式设定还带来第二重好处：CLI 未来若改变默认模式，这里的取值不受影响。
+            permission_mode=await self.resolve_permission_mode(),
             hooks=hooks,
             mcp_servers={"arcreel": arcreel_server},
             session_store=self.build_session_store(),

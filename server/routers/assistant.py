@@ -34,6 +34,7 @@ from server.agent_runtime.session_manager import (
     QueuedMessageNotFoundError,
     QueuedMessageWithdrawalPendingError,
     SessionCapacityError,
+    SessionQueueCancelled,
     UnrecordedMessageError,
 )
 from server.i18n import Translator, get_locale
@@ -173,6 +174,9 @@ async def send_message(
         raise ConflictError("message_accepted_but_unrecorded") from exc
     except SessionCapacityError as exc:
         raise ServiceUnavailableError("session_capacity_exceeded") from exc
+    except SessionQueueCancelled as exc:
+        # 等待者主动退场：与「等满了还没轮到」是两种结局，客户端据此收手而不是重试。
+        raise ConflictError("session_queue_cancelled") from exc
     except FileNotFoundError as exc:
         raise NotFoundError("session_or_project_not_found") from exc
     except TimeoutError as exc:
@@ -194,6 +198,33 @@ async def send_message(
     except Exception as exc:
         logger.exception("请求处理失败")
         raise HTTPException(status_code=500, detail=_t("internal_server_error")) from exc
+
+
+@router.get("/capacity")
+async def get_capacity(
+    project_name: str,
+    client_key: str | None = Query(default=None, max_length=128),
+):
+    """并发槽位与排队的只读快照，供前端在「发送在途但会话尚未建成」时渲染等待状态。
+
+    刻意放在 ``/assistant`` 根下而非 ``/assistant/sessions/`` 里：后者全是
+    ``/sessions/{session_id}/…`` 形态，字面量路径会被 ``{session_id}`` 吞掉。
+
+    ``client_key`` 缺省时只返回全局计数、``position`` 为 ``None``——不泄露任何等待者身份。
+    """
+    service = get_assistant_service()
+    return await service.session_manager.get_capacity_status(client_key)
+
+
+@router.delete("/capacity/{client_key}")
+async def cancel_capacity(project_name: str, client_key: str):
+    """取消排队中的等待者。
+
+    ``cancelled=false`` 表示该 ``client_key`` 没在排队（已拿到槽位 / 从未排队 / 早已退出），
+    此时**不要**中断发送请求——已授予的槽位不作废（见 ``SessionManager._ensure_capacity``）。
+    """
+    service = get_assistant_service()
+    return {"cancelled": service.session_manager.cancel_capacity_wait(client_key)}
 
 
 @router.post("/sessions/{session_id}/rewrite")

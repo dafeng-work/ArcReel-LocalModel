@@ -34,6 +34,8 @@ export function ExecutionModePage() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveOk, setSaveOk] = useState(false);
   const [executionMode, setExecutionMode] = useState<ExecutionMode>("multi");
+  // 默认 true：与上游 ArcReel 一致（上游不设 permission_mode，CLI 默认即 auto）。
+  const [agentAutoMode, setAgentAutoMode] = useState<boolean>(true);
   const [envMapping, setEnvMapping] = useState<string>("");
   const [availableEnvs, setAvailableEnvs] = useState<string[]>([]);
   const [currentHostEnv, setCurrentHostEnv] = useState<string | null>(null);
@@ -44,6 +46,7 @@ export function ExecutionModePage() {
     try {
       const res: GetSystemConfigResponse = await API.getSystemConfig();
       setExecutionMode(res.settings.execution_mode ?? "multi");
+      setAgentAutoMode(res.settings.agent_auto_mode ?? true);
       setEnvMapping(res.settings.env_mapping ?? "");
       setAvailableEnvs(res.options.available_envs ?? []);
       setCurrentHostEnv(res.options.current_host_env ?? null);
@@ -64,7 +67,11 @@ export function ExecutionModePage() {
     setSaveError(null);
     setSaveOk(false);
     try {
-      await API.updateSystemConfig({ execution_mode: executionMode, env_mapping: envMapping });
+      await API.updateSystemConfig({
+        execution_mode: executionMode,
+        env_mapping: envMapping,
+        agent_auto_mode: agentAutoMode,
+      });
       setSaveOk(true);
       await refresh();
     } catch (err) {
@@ -72,7 +79,7 @@ export function ExecutionModePage() {
     } finally {
       setSaving(false);
     }
-  }, [executionMode, envMapping, refresh]);
+  }, [executionMode, envMapping, agentAutoMode, refresh]);
 
   if (loading) {
     return (
@@ -91,6 +98,8 @@ export function ExecutionModePage() {
         value={executionMode}
         onChange={setExecutionMode}
         currentHostEnv={currentHostEnv}
+        autoMode={agentAutoMode}
+        onAutoModeChange={setAgentAutoMode}
       />
 
       <EnvMappingSection

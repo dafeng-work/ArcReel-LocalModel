@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type {
+  AgentCapacityStatus,
   ContentBlock,
   DraftDeltaPayload,
   DraftState,
@@ -57,6 +58,12 @@ interface AssistantState {
   /** 待追加到输入框末尾的消息内容（编辑排队消息时退回），由输入框取走。 */
   composerAppends: ContentBlock[][];
   sending: boolean;
+  /**
+   * 发送在途、后端因并发上限排队时的快照（等待中 / 排队位次）。
+   * `null` = 不在排队：要么容量一开始就够（此时看不到任何排队状态），
+   * 要么排队已结束 / 被取消。横幅据此亮灭。
+   */
+  queueStatus: AgentCapacityStatus | null;
   interrupting: boolean;
   error: string | null;
   /** 当前面板生命周期内最近一次 Agent 启动失败观测；不做跨刷新持久化。 */
@@ -132,6 +139,7 @@ interface AssistantState {
   /** 输入框取走待追加的内容。 */
   takeComposerAppends: () => ContentBlock[][];
   setSending: (sending: boolean) => void;
+  setQueueStatus: (status: AgentCapacityStatus | null) => void;
   setInterrupting: (interrupting: boolean) => void;
   setError: (error: string | null) => void;
   setStartupFailure: (failure: FailureObservation | null, origin?: StartupFailureOrigin) => void;
@@ -213,6 +221,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => {
     input: "",
     composerAppends: [],
     sending: false,
+    queueStatus: null,
     interrupting: false,
     error: null,
     startupFailure: null,
@@ -347,6 +356,8 @@ export const useAssistantStore = create<AssistantState>((set, get) => {
       return appends;
     },
     setSending: (sending) => set({ sending }),
+    // 与 sending 同一处置：结束发送即清掉排队状态，否则横幅会滞留到下一次发送
+    setQueueStatus: (queueStatus) => set({ queueStatus }),
     setInterrupting: (interrupting) => set({ interrupting }),
     setError: (error) => set({ error }),
     // origin 与 failure 同一次写入，两者不会各自漂移

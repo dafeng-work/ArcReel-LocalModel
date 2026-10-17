@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
-import { ArrowUp, Loader2, Paperclip, Square, X } from "lucide-react";
+import { ArrowUp, Loader2, Paperclip, Square, Timer, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "cn";
 import {
@@ -22,7 +22,7 @@ import {
   type AttachedImage,
 } from "@/hooks/useImageAttachments";
 import { useAssistantStore } from "@/stores/assistant-store";
-import type { ContentBlock, QueuedMessageWithdrawal } from "@/types";
+import type { AgentCapacityStatus, ContentBlock, QueuedMessageWithdrawal } from "@/types";
 import { voidCall } from "@/utils/async";
 import { turnImageAttachments, turnPlainText } from "./chat/utils";
 import { QueuedMessageTray } from "./QueuedMessageTray";
@@ -41,6 +41,13 @@ interface AgentComposerProps {
   running: boolean;
   /** 发送请求在途：发送按钮转圈。 */
   sending: boolean;
+  /**
+   * 发送在途、后端因并发上限排队时的快照。为 null 表示不在排队，按钮维持纯转圈。
+   * 单卡单 slot 推理服务上第二个会话必然要排队，没有它用户只会看到 5 分钟静默。
+   */
+  queueStatus?: AgentCapacityStatus | null;
+  /** 用户放弃排队。服务端拦不住时不会中断发送，故这里是 fire-and-forget。 */
+  onCancelSend?: () => void;
   placeholder: string;
   /** 提问占用输入框位置时隐藏输入框；仍保持挂载，已输入的文字与附件不丢。排队消息托盘照常显示。 */
   hidden?: boolean;
@@ -85,10 +92,12 @@ export function AgentComposer({
   disabled,
   running,
   sending,
+  queueStatus = null,
   placeholder,
   hidden,
   onSend,
   onInterrupt,
+  onCancelSend,
   onWithdrawQueued,
   onResendQueued,
   onSendQueuedNow,
@@ -290,6 +299,39 @@ export function AgentComposer({
           onDrop={handleDrop}
         >
           <InputGroup ref={groupRef}>
+            {/*
+             * 排队横幅：位次是弱一致的展示值，可能随其它等待者进出跳动，故文案只陈述
+             * 当前排队状况，不承诺「轮到你就会开始」——服务端并不保证那个顺序。
+             * 挂在 block-start 是为了跟附件行同一形态：输入框上方的通栏块。
+             */}
+            {sending && queueStatus?.position != null ? (
+              <InputGroupAddon align="block-start">
+                <div
+                  className="flex w-full items-center gap-2 rounded-md bg-muted/60 px-2 py-1.5 text-xs text-muted-foreground"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <Timer aria-hidden className="mt-0.5 size-3.5 shrink-0" data-icon="inline-start" />
+                  <span className="min-w-0 flex-1">
+                    {t("capacity_queue_waiting", {
+                      position: queueStatus.position,
+                      waiting: queueStatus.waiting,
+                      seconds: queueStatus.queued_seconds ?? 0,
+                    })}
+                  </span>
+                  {onCancelSend ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="shrink-0"
+                      onClick={onCancelSend}
+                    >
+                      {t("capacity_queue_cancel")}
+                    </Button>
+                  ) : null}
+                </div>
+              </InputGroupAddon>
+            ) : null}
             {hasAttachments && (
               <InputGroupAddon align="block-start">
                 <AttachmentGroup className="w-full">

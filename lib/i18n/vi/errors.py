@@ -697,6 +697,7 @@ MESSAGES = {
     "version_resource_not_found": "Tài nguyên '{resource_type}/{resource_id}' không tồn tại",
     "version_snapshot_path_unmanaged": "Bản ghi phiên bản '{resource_type}' trỏ tới đường dẫn ảnh chụp không được quản lý; thao tác đã bị từ chối",
     "session_capacity_exceeded": "Đã đạt giới hạn phiên đồng thời, vui lòng thử lại sau",
+    "session_queue_cancelled": "Đã hủy chờ xếp hàng, tin nhắn này chưa được gửi",
     "session_question_unavailable": "Phiên chưa chạy hoặc không có câu hỏi đang chờ",
     "rewrite_anchor_invalid": "Tin nhắn bạn muốn sửa không thuộc cuộc trò chuyện này, hãy tải lại rồi thử lại",
     "rewrite_blocked_by_question": "Hãy trả lời thẻ câu hỏi trong cuộc trò chuyện trước khi sửa tin nhắn",

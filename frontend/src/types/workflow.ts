@@ -325,3 +325,24 @@ export interface WorkflowPlanRequest {
   episode_id?: number | null;
   confirmed_request_durations?: Record<string, number>;
 }
+
+/** `POST /projects/{name}/workflow-dispatch` 的请求体：把计划给出的 next_action 原样回传。 */
+export interface WorkflowDispatchRequest {
+  next_action: WorkflowNextAction;
+}
+
+/**
+ * env 前置闸门的分发结果。
+ *
+ * `error_message` 已由服务端按用户语言渲染（`_t("env_switch_timeout")` 等），
+ * 界面直接展示，不再按 `error_code` 查译文——与批量准入的 `message` 同一口径。
+ */
+export interface WorkflowDispatchResult {
+  ok: boolean;
+  switched_to: string | null;
+  elapsed_seconds: number | null;
+  /** 切 env 成功后要继续执行的动作；`null` 表示没有可续做的动作，由界面重新求解计划。 */
+  resume_action: WorkflowNextAction | null;
+  error_code: string | null;
+  error_message: string | null;
+}

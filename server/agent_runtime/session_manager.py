@@ -55,6 +55,7 @@ from server.agent_runtime.result_status import resolve_result_status
 from server.agent_runtime.sdk_frames import CommandLifecycle
 from server.agent_runtime.session_actor import SessionActor, SessionCommand
 from server.agent_runtime.session_store import SessionMetaStore
+from server.agent_runtime.stall_guard import StallTrip
 from server.agent_runtime.usage_extraction import (
     extract_assistant_cost,
     extract_text_token_usage,
@@ -74,10 +75,26 @@ from claude_agent_sdk.types import (
 
 from lib.backends.providers import PROVIDER_ANTHROPIC, CallPurpose, CallStatus
 from lib.billing.ledger import Ledger
+from lib.config.agent_auto_mode import (
+    AGENT_AUTO_MODE_SETTING,
+    PermissionModeValue,
+    permission_mode_for,
+    resolve_agent_auto_mode,
+)
 from lib.config.service import ConfigService
 from lib.db import async_session_factory
 
 SDK_AVAILABLE = True
+
+#: 停滞熔断后等待 CLI 回应 interrupt 的上限。超时只记日志：结论已落库，不因中断
+#: 不响应而把 inbox 处理任务一起堵死（回调跑在 inbox 栈内）。
+_STALL_INTERRUPT_TIMEOUT_SECONDS = 15.0
+
+#: 并发槽位被 running 会话占满时的**有界排队**上限（秒）。超时后明确报错而非静默拒绝。
+SESSION_QUEUE_TIMEOUT_SECONDS = 300.0
+
+#: 排队期间重新判定容量的轮询间隔（秒）。取小值以尽快拿到刚释放的槽位。
+_SESSION_CAPACITY_POLL_SECONDS = 1.0
 
 
 # inbox 积压告警阈值：~1s 内 100 条 stream_event（典型流式频率上限）；
@@ -119,6 +136,27 @@ class _StartupStderrCollector:
 
 class SessionCapacityError(Exception):
     """所有并发槽位已被 running 会话占满，无法创建新连接。"""
+
+
+class SessionQueueCancelled(Exception):
+    """等待者被显式取消（前端 ``DELETE /assistant/capacity/{client_key}``）。
+
+    与 :class:`SessionCapacityError` 分开：前者是「等够了还没轮到」，后者是「不排了」。
+    两者在路由层落到不同的 HTTP 状态，客户端才能区分该重试还是该收手。
+    """
+
+
+@dataclass
+class _CapacityWaiter:
+    """一条排队中的等待记录——只用于展示等待中 / 排队位次与接收取消，不参与任何判定。
+
+    ``enqueued_at`` 用单调时钟：位次排序与「已等待多久」都要它，而墙钟会跳变。
+    ``cancelled`` 由 :meth:`SessionManager.cancel_capacity_wait` 置位，等待循环下轮询到即退出。
+    """
+
+    client_key: str
+    enqueued_at: float
+    cancelled: bool = False
 
 
 class UnrecordedMessageError(Exception):
@@ -591,10 +629,20 @@ class SessionManager:
         sandbox_enabled: bool = True,
         event_log_store: EventLogStore | None = None,
         sdk_id_timeout: float = 60.0,
+        capacity_queue_timeout_seconds: float | None = None,
+        capacity_poll_seconds: float | None = None,
     ):
         self.event_log_store = event_log_store or EventLogStore()
         # 新会话等待 CLI init 上报 sdk_session_id 的上限；超时即判启动失败。
         self._sdk_id_timeout = sdk_id_timeout
+        # 并发排队的上限与轮询间隔。留成显式构造参数是给测试的 seam——用例要压缩这两个
+        # 量到亚秒级才能跑得动，monkeypatch 模块私有常量是被 audit_tests 明令禁止的写法。
+        self._capacity_queue_timeout_seconds = (
+            SESSION_QUEUE_TIMEOUT_SECONDS if capacity_queue_timeout_seconds is None else capacity_queue_timeout_seconds
+        )
+        self._capacity_poll_seconds = (
+            _SESSION_CAPACITY_POLL_SECONDS if capacity_poll_seconds is None else capacity_poll_seconds
+        )
         self.project_root = Path(project_root)
         # Tests construct SessionManager directly without going through
         # AssistantService, so we fall back to the default data root
@@ -618,6 +666,8 @@ class SessionManager:
         self._autonomous_turn_listener: Callable[[str, str], None] | None = None
         # 正在驱逐的会话 → 驱逐完成时置位的事件；连接在驱逐完成后才按冷会话重建，不与它交错。
         self._disconnecting: dict[str, asyncio.Event] = {}
+        # 正在排队等并发槽位的等待者（client_key → 记录）。仅供展示与取消，不参与容量判定。
+        self._capacity_waiters: dict[str, _CapacityWaiter] = {}
         # 优雅 send_disconnect 的等待上限；超时后各调用点再走无界的 cancel 兜底。
         self._session_actor_shutdown_timeout: float = 15.0
         self._connect_locks: dict[str, asyncio.Lock] = {}
@@ -655,6 +705,7 @@ class SessionManager:
             access_policy_provider=lambda: self.access_policy,
             max_turns_provider=lambda: self.max_turns,
             resolve_project_cwd=self._resolve_project_cwd,
+            permission_mode_provider=self._resolve_permission_mode,
             session_factory_provider=lambda: getattr(self, "_session_factory", None),
             user_id_provider=lambda: getattr(self, "_user_id", DEFAULT_USER_ID),
         )
@@ -743,7 +794,36 @@ class SessionManager:
             session_id_provider=lambda: managed.resolved_sdk_id,
             project_name_provider=lambda: managed.project_name,
             broadcast=managed.channel.broadcast,
+            on_stall=lambda trip: self._on_session_stall(managed, trip),
         )
+
+    async def _on_session_stall(self, managed: "ManagedSession", trip: StallTrip) -> None:
+        """停滞熔断的动作：**先落可读结论，再有界中断在途回合**。
+
+        顺序有意为之——结论先落库，即便随后中断卡住或失败，用户也已经在时间线上看到
+        「为什么停」；反过来先中断，结论可能随会话一起丢掉，现象就退回「静默停住」。
+
+        本回调跑在 inbox 处理任务上（``handle_message`` 的调用栈内），故中断必须带
+        超时：否则 CLI 一旦不回 ``cmd.done``，整条 inbox 会跟着堵住。
+        """
+        pipeline = managed.entry_pipeline
+        if pipeline is not None:
+            try:
+                await pipeline.append_stall(trip)
+            except Exception:
+                logger.exception("停滞结论落库失败 session_id=%s", managed.resolved_sdk_id)
+
+        if managed.status != "running":
+            return
+        try:
+            await asyncio.wait_for(managed.send_interrupt(), timeout=_STALL_INTERRUPT_TIMEOUT_SECONDS)
+        except Exception:
+            logger.warning(
+                "停滞中断在途回合失败（结论已落库）session_id=%s tool=%s",
+                managed.resolved_sdk_id,
+                trip.tool_name,
+                exc_info=True,
+            )
 
     def _make_actor_message_callback(
         self,
@@ -859,7 +939,7 @@ class SessionManager:
             exc = RuntimeError("claude_agent_sdk is not installed")
             raise _make_agent_startup_error(exc, project_name=project_name, session_id=None) from exc
 
-        await self._ensure_capacity()
+        await self._ensure_capacity(client_key)
         temp_id = uuid4().hex
         managed_ref: list[ManagedSession | None] = [None]
 
@@ -1179,6 +1259,7 @@ class SessionManager:
         meta: SessionMeta | None = None,
         locale: str = DEFAULT_LOCALE,
         resumable: bool = True,
+        client_key: str | None = None,
     ) -> ManagedSession:
         """Get existing managed session or spin up an actor for resumed session.
 
@@ -1208,7 +1289,7 @@ class SessionManager:
                     return cached
                 try:
                     managed = await self._connect_resumed_session(
-                        session_id, meta=meta, locale=locale, resumable=resumable
+                        session_id, meta=meta, locale=locale, resumable=resumable, client_key=client_key
                     )
                 except BaseException:
                     channel = self._channels.get(session_id)
@@ -1246,7 +1327,13 @@ class SessionManager:
         return None, detached
 
     async def _connect_resumed_session(
-        self, session_id: str, *, meta: SessionMeta | None, locale: str, resumable: bool
+        self,
+        session_id: str,
+        *,
+        meta: SessionMeta | None,
+        locale: str,
+        resumable: bool,
+        client_key: str | None = None,
     ) -> ManagedSession:
         """按冷会话路径启动 actor 并登记会话，调用方持有连接锁。"""
         if meta is None:
@@ -1258,7 +1345,7 @@ class SessionManager:
             exc = RuntimeError("claude_agent_sdk is not installed")
             raise _make_agent_startup_error(exc, project_name=meta.project_name, session_id=session_id) from exc
 
-        await self._ensure_capacity()
+        await self._ensure_capacity(client_key)
         managed_ref: list[ManagedSession | None] = [None]
 
         # 见 send_new_session 同名注释：只在启动阶段无损收集，成功后释放。
@@ -1375,7 +1462,9 @@ class SessionManager:
             current_env = read_current_host_env(DEFAULT_CURRENT_ENV_PATH)
             raise LLMUnreachableError(target_env=target_env, current_env=current_env)
 
-        managed = await self.get_or_connect(session_id, meta=meta, locale=locale, resumable=resumable)
+        managed = await self.get_or_connect(
+            session_id, meta=meta, locale=locale, resumable=resumable, client_key=client_key
+        )
         managed.last_activity = time.monotonic()
 
         # 查重、登记、投递与失败回滚共用一个临界区；重试只认领已完成投递的消息。
@@ -2041,7 +2130,120 @@ class SessionManager:
             logger.warning("读取 max_concurrent 配置失败，使用默认值", exc_info=True)
             return 5
 
-    async def _ensure_capacity(self) -> None:
+    async def _resolve_permission_mode(self) -> PermissionModeValue:
+        """解析本次会话的 SDK ``permission_mode``（``agent_auto_mode`` 开关 → 取值）。
+
+        每次 options build 现取：设置页改开关后，后续新建 / resume 会话立即生效。
+
+        env 覆盖优先级最高（见 :mod:`lib.config.agent_auto_mode`）——本地 agent 自动化
+        测试据此在**不修改 DB 设置**的前提下强制关闭 auto。读库失败时回退到同一条
+        解析链（env + 默认开启），不让配置读取故障意外改变权限语义。
+        """
+        try:
+            async with async_session_factory() as session:
+                svc = ConfigService(session)
+                raw = await svc.get_setting(AGENT_AUTO_MODE_SETTING, "")
+        except Exception:
+            logger.warning("读取 agent_auto_mode 配置失败，回退默认解析链", exc_info=True)
+            return permission_mode_for(resolve_agent_auto_mode(None))
+        return permission_mode_for(resolve_agent_auto_mode(raw))
+
+    async def _ensure_capacity(self, client_key: str | None = None) -> None:
+        """确保有空余并发槽位；槽位被 running 会话占满时**有界排队**等待。
+
+        单卡单 slot 推理服务上，并发会话必然互相饿死——但「立刻拒绝」对用户毫无帮助：
+        他等的其实只是前一个会话跑完。故这里改成排队等待，给出明确上限：超时后抛
+        :class:`SessionCapacityError`，并在消息里带上已等待时长——**不静默失败**。
+
+        底层判定（容量比较 + 淘汰最久未活跃的空闲会话）见 :meth:`_ensure_capacity_once`。
+
+        ``client_key`` 是排队者身份（由前端生成、随请求上送）。给了它，等待期间会登记进
+        :attr:`_capacity_waiters`，供前端轮询 ``GET /assistant/capacity`` 显示「排队第几位、
+        已等多久」，并可经 ``DELETE /assistant/capacity/{client_key}`` 取消。没有它就只是匿名排队。
+
+        **三个已知特性，实施时确认过，不掩盖**：
+
+        1. 本方法由建会话入口（``send_new_session`` / resume）调用，而那两个入口跑在
+           HTTP 请求里——等待期间**该请求保持挂起**，上限即本常量。网关/反代的读超时要
+           大于它，否则用户看到的是代理超时，而不是本方法的排队提示。
+        2. 并发上限是**软限制**：判定通过到新会话登记进 ``self.sessions`` 之间存在窗口，
+           多个等待者可能在同一轮询点同时通过而短暂超限一个。这是既有实现固有的 TOCTOU
+           （原先窗口极短，被等待放大）；单用户本机部署影响有限，真要严格需把「授予槽位」
+           与「登记会话」放进同一把锁，属独立改动。
+        3. 取消与放行存在竞态：槽位可能恰好在取消请求到达前被授予，会话随即建成。此时
+           ``cancel_capacity_wait`` 返回 ``False``，调用方据此不 abort、不回滚——**已授予的
+           槽位不作废**，这是刻意的：宁可多一个用户没看见的会话，也不要凭空吞掉一条消息。
+        """
+        deadline = time.monotonic() + self._capacity_queue_timeout_seconds
+        first_wait = True
+        waiter: _CapacityWaiter | None = None
+        try:
+            while True:
+                # 取消先于容量判定：已被明确取消的等待者不该再抢槽位。
+                if waiter is not None and waiter.cancelled:
+                    raise SessionQueueCancelled("排队已被取消")
+                try:
+                    await self._ensure_capacity_once()
+                    return
+                except SessionCapacityError as exc:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        waited = int(self._capacity_queue_timeout_seconds - remaining)
+                        raise SessionCapacityError(f"{exc}（已等待约 {waited} 秒仍未等到空闲槽位）") from exc
+                    if waiter is None and client_key:
+                        # 容量一开始就够时根本不排队，也就不该被报成「排队中」。
+                        waiter = self._capacity_waiters.setdefault(
+                            client_key, _CapacityWaiter(client_key=client_key, enqueued_at=time.monotonic())
+                        )
+                    if first_wait:
+                        logger.info("并发槽位被 running 会话占满，进入有界排队等待 client_key=%s", client_key)
+                        first_wait = False
+                    await asyncio.sleep(min(self._capacity_poll_seconds, remaining))
+        finally:
+            # 获批 / 超时 / 取消 / 其它异常四条路径共用此出口——等待者绝不留在表里。
+            if waiter is not None:
+                self._capacity_waiters.pop(waiter.client_key, None)
+
+    def cancel_capacity_wait(self, client_key: str) -> bool:
+        """取消排队中的等待者。
+
+        返回是否命中等待者：``False`` 表示该 ``client_key`` 没在排队（已经拿到槽位、
+        从未排队、或早已退出），调用方据此不要 abort——已授予的槽位不作废（见
+        :meth:`_ensure_capacity` docstring 第 3 条）。
+        """
+        waiter = self._capacity_waiters.get(client_key)
+        if waiter is None:
+            return False
+        waiter.cancelled = True
+        logger.info("排队等待被取消 client_key=%s", client_key)
+        return True
+
+    async def get_capacity_status(self, client_key: str | None = None) -> dict[str, Any]:
+        """并发槽位与排队的只读快照，供前端渲染等待中 / 排队位次。
+
+        ``position`` 是 1-based 位次，按入队先后在**活等待者**中排；``client_key``
+        不在表内（含未排队与已出队）时为 ``None``。位次是展示性反馈，弱一致：
+        并发轮询下可能来回跳——它不参与任何正确性判定。
+        """
+        max_concurrent = await self._get_max_concurrent()
+        active = [s for s in self.sessions.values() if s.session_id not in self._disconnecting]
+        now = time.monotonic()
+        ordered = sorted(self._capacity_waiters.values(), key=lambda w: w.enqueued_at)
+        waiter = self._capacity_waiters.get(client_key) if client_key else None
+        position = None
+        queued_seconds = None
+        if waiter is not None:
+            position = ordered.index(waiter) + 1
+            queued_seconds = int(now - waiter.enqueued_at)
+        return {
+            "active": len(active),
+            "max_concurrent": max_concurrent,
+            "waiting": len(ordered),
+            "position": position,
+            "queued_seconds": queued_seconds,
+        }
+
+    async def _ensure_capacity_once(self) -> None:
         """确保有空余并发槽位，必要时淘汰最久未活跃的非 running 会话。"""
         max_concurrent = await self._get_max_concurrent()
         active = [s for s in self.sessions.values() if s.session_id not in self._disconnecting]
@@ -2074,8 +2276,8 @@ class SessionManager:
                 raise SessionCapacityError("存在未能关闭的空闲会话，当前无法释放并发槽位，请稍后重试") from exc
             return
 
-        # 所有会话都在 running → 拒绝
-        raise SessionCapacityError(f"当前有{len(active)}个正在进行的会话，已达到最大上限，请稍后重试")
+        # 所有会话都在 running → 本轮判定为容量不足，交给上层排队等待。
+        raise SessionCapacityError(f"当前有{len(active)}个正在进行的会话，已达到最大上限")
 
     _PATROL_INTERVAL = 300  # 5 分钟
 

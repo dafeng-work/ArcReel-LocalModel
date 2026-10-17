@@ -43,12 +43,22 @@ def _make_policy(tmp_path: Path, *, sandbox_enabled: bool = True) -> AgentAccess
     )
 
 
+def _async_value(value: str):
+    """返回一个 await 后给出固定值的协程函数（``permission_mode_provider`` 的形状）。"""
+
+    async def _provider() -> str:
+        return value
+
+    return _provider
+
+
 def _make_assembler(
     tmp_path: Path,
     *,
     policy: AgentAccessPolicy | None = None,
     max_turns: int | None = None,
     provider_env_loader=None,
+    permission_mode_provider=None,
     user_id: str = DEFAULT_USER_ID,
 ) -> OptionsAssembler:
     projects_root = (tmp_path / "projects").resolve()
@@ -62,9 +72,55 @@ def _make_assembler(
         access_policy_provider=lambda: resolved_policy,
         max_turns_provider=lambda: max_turns,
         resolve_project_cwd=lambda name: projects_root / name,
+        permission_mode_provider=permission_mode_provider,
         provider_env_loader=provider_env_loader,
         user_id_provider=lambda: user_id,
     )
+
+
+@pytest.mark.asyncio
+async def test_build_wires_auto_permission_mode_when_disabled(tmp_path: Path) -> None:
+    """关闭 auto 时显式钉成 ``default``：权限改由本地 hook / sandbox / allow 规则裁决。
+
+    这是防回归锚点——不显式设定就退回 CLI 默认的 auto 模式，而 auto 模式在单 slot
+    推理服务上会让分类请求与主回合自锁（成因见 lib.config.agent_auto_mode）。
+    """
+    assembler = _make_assembler(
+        tmp_path,
+        permission_mode_provider=_async_value("default"),
+    )
+    options = await assembler.build("demo")
+    assert options.permission_mode == "default"
+
+
+@pytest.mark.asyncio
+async def test_build_keeps_auto_permission_mode_when_enabled(tmp_path: Path) -> None:
+    """开启时映射到 ``auto``（默认开启，与上游一致、零回归）。"""
+    assembler = _make_assembler(
+        tmp_path,
+        permission_mode_provider=_async_value("auto"),
+    )
+    options = await assembler.build("demo")
+    assert options.permission_mode == "auto"
+
+
+@pytest.mark.asyncio
+async def test_build_falls_back_to_env_and_default_without_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """未注入 provider 时回退到「env 覆盖 + 默认开启」，与部署路径同语义。
+
+    这是 A4 的落点：本地 agent 自动化测试把 ``ARCREEL_AGENT_AUTO_MODE=0`` 设上，
+    即可在不改 DB 的前提下强制关闭。
+    """
+    monkeypatch.delenv("ARCREEL_AGENT_AUTO_MODE", raising=False)
+    assembler = _make_assembler(tmp_path)
+    options = await assembler.build("demo")
+    assert options.permission_mode == "auto"
+
+    monkeypatch.setenv("ARCREEL_AGENT_AUTO_MODE", "0")
+    options = await assembler.build("demo")
+    assert options.permission_mode == "default"
 
 
 @pytest.mark.asyncio

@@ -28,6 +28,14 @@ export interface SystemConfigSettings {
   execution_mode?: "multi" | "exclusive";
   /** G3：step-id → 宿主机 env 名映射的 JSON 字符串；空串 = 用 lib.config.dispatcher_schema 的默认 mapping。 */
   env_mapping?: string;
+  /**
+   * Agent auto 权限模式开关，缺省 true（与上游 ArcReel 一致，零回归）。
+   *
+   * 开启时 claude-code 每次工具调用前会额外发一次 LLM 安全分类请求；单卡单 slot
+   * 推理服务上该请求与主回合共用同一通道，可能互相等待导致会话空转 —— 单机部署
+   * 应关闭。关闭后工具权限改由本地 PreToolUse hook + sandbox + allow 规则裁决。
+   */
+  agent_auto_mode?: boolean;
 }
 
 export interface SystemConfigOptions {
@@ -129,6 +137,8 @@ export interface SystemConfigPatch {
   execution_mode?: "multi" | "exclusive";
   /** G3：env_mapping 字符串（空串表示用默认）。 */
   env_mapping?: string;
+  /** Agent auto 权限模式开关；省略 = 不改动该项。 */
+  agent_auto_mode?: boolean;
 }
 
 /** ``POST /system/config/test-preflight`` 的响应。 */
