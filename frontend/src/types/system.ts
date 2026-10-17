@@ -36,6 +36,8 @@ export interface SystemConfigSettings {
    * 应关闭。关闭后工具权限改由本地 PreToolUse hook + sandbox + allow 规则裁决。
    */
   agent_auto_mode?: boolean;
+  /** 工具返回前把宿主 env 切回 Agent brain 的文本 env；默认 false。 */
+  post_tool_env_restore?: boolean;
 }
 
 export interface SystemConfigOptions {
@@ -139,6 +141,8 @@ export interface SystemConfigPatch {
   env_mapping?: string;
   /** Agent auto 权限模式开关；省略 = 不改动该项。 */
   agent_auto_mode?: boolean;
+  /** 工具返回前把宿主 env 切回 Agent brain 的文本 env；默认 false。 */
+  post_tool_env_restore?: boolean;
 }
 
 /** ``POST /system/config/test-preflight`` 的响应。 */

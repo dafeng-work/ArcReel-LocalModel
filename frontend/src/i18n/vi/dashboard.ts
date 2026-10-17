@@ -428,6 +428,10 @@ export default {
     'Đang bật: có thêm một yêu cầu phân loại LLM trước mỗi lời gọi công cụ. Nếu dịch vụ suy luận chỉ có 1 slot (PARALLEL=1), yêu cầu đó sẽ phải chờ lượt chính và phiên có thể treo lâu mà không có đầu ra — hãy tắt trên triển khai một GPU.',
   'agent_auto_mode_warn_off':
     'Đang tắt: không phân loại an toàn bằng LLM. Quyền công cụ do PreToolUse hook, sandbox và quy tắc cho phép quyết định cục bộ. Phiên không còn treo vì chờ timeout của bộ phân loại.',
+  'post_tool_env_restore_label': 'Khôi phục env brain sau công cụ GPU',
+  'post_tool_env_restore_help': 'Công cụ ảnh / video chuyển env host sang env mô hình trước khi chạy; khi bật, env văn bản của brain được chuyển lại sau khi công cụ trả về.',
+  'post_tool_env_restore_warn_on': 'Đang bật: mỗi lần công cụ GPU trả về sẽ tốn thêm một lần chuyển env (30–90s). Đó là cái giá để loại bỏ ECONNREFUSED — tắt đi thì agent không kết nối được dịch vụ suy luận sau pha GPU.',
+  'post_tool_env_restore_warn_off': 'Đang tắt (mặc định, khớp thượng nguồn): env không được khôi phục sau khi công cụ trả về. Với execution_mode exclusive, bất kỳ bước ảnh hay video nào cũng khiến agent không gọi được suy luận.',
   'capacity_queue_waiting': 'Đang xếp hàng: vị trí {{position}} trên {{waiting}}, đã chờ {{seconds}} giây',
   'capacity_queue_cancel': 'Hủy xếp hàng',
   'env_mapping_section_title': 'Bước quy trình → ánh xạ env',

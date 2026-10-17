@@ -20,6 +20,13 @@ interface Props {
   /** auto 权限模式开关；true = 每次工具调用前多一次 LLM 安全分类请求。 */
   autoMode: boolean;
   onAutoModeChange: (next: boolean) => void;
+  /**
+   * 工具返回前把宿主 env 切回 Agent brain 的文本 env。
+   * true = preflight 切出去的 wide-nsfw 会被切回，Agent 下一次 LLM 调用不必面对
+   * ECONNREFUSED；代价是每个 GPU 工具返回时多一次 30–90s 的切换。
+   */
+  postToolEnvRestore: boolean;
+  onPostToolEnvRestoreChange: (next: boolean) => void;
 }
 
 export function ExecutionModeSection({
@@ -28,10 +35,13 @@ export function ExecutionModeSection({
   currentHostEnv,
   autoMode,
   onAutoModeChange,
+  postToolEnvRestore,
+  onPostToolEnvRestoreChange,
 }: Props) {
   const { t } = useTranslation("dashboard");
   const groupId = useId();
   const autoId = useId();
+  const restoreId = useId();
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<PreflightTestResponse | null>(null);
   const [testError, setTestError] = useState<string | null>(null);
@@ -100,6 +110,39 @@ export function ExecutionModeSection({
         >
           <TriangleAlert aria-hidden className="mt-0.5 size-3.5 shrink-0" data-icon="inline-start" />
           <span>{autoMode ? t("dashboard:agent_auto_mode_warn_on") : t("dashboard:agent_auto_mode_warn_off")}</span>
+        </p>
+      </div>
+
+      {/*
+        与 auto 开关同构，但**语义相反**：那个开关开着会空转死锁（要关），
+        这个开关关着会 ECONNREFUSED（要开）。故开启态不用 destructive，改用普通
+        警示色；关闭态才提示后果，因为「关了会坏」是用户更容易漏掉的那一边。
+      */}
+      <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-3">
+        <div className="flex items-start justify-between gap-3">
+          <Label htmlFor={restoreId} className="flex flex-col">
+            <span className="mb-0.5 text-sm font-medium">{t("dashboard:post_tool_env_restore_label")}</span>
+            <span className="text-xs text-muted-foreground">{t("dashboard:post_tool_env_restore_help")}</span>
+          </Label>
+          <Switch
+            id={restoreId}
+            checked={postToolEnvRestore}
+            onCheckedChange={onPostToolEnvRestoreChange}
+          />
+        </div>
+        <p
+          className={
+            postToolEnvRestore
+              ? "flex items-start gap-1.5 rounded-md bg-muted/60 px-2 py-1.5 text-xs text-muted-foreground"
+              : "flex items-start gap-1.5 rounded-md bg-destructive/10 px-2 py-1.5 text-xs text-destructive"
+          }
+        >
+          <TriangleAlert aria-hidden className="mt-0.5 size-3.5 shrink-0" data-icon="inline-start" />
+          <span>
+            {postToolEnvRestore
+              ? t("dashboard:post_tool_env_restore_warn_on")
+              : t("dashboard:post_tool_env_restore_warn_off")}
+          </span>
         </p>
       </div>
 

@@ -38,9 +38,11 @@ from lib.config.agent_auto_mode import (
     parse_agent_auto_mode,
 )
 from lib.config.dispatcher_schema import (
+    POST_TOOL_ENV_RESTORE_SETTING,
     list_available_envs,
     parse_env_mapping,
     parse_execution_mode,
+    parse_post_tool_env_restore,
     validate_env_mapping,
 )
 from lib.config.registry import PROVIDER_REGISTRY
@@ -367,6 +369,11 @@ class SystemConfigPatchRequest(BaseModel):
     # Agent auto 权限模式（claude-code 的 LLM 安全分类器）。默认 True = 与上游一致；
     # 单卡单 slot 部署需设为 False，否则分类请求与主回合自锁（成因见 lib.config.agent_auto_mode）。
     agent_auto_mode: bool | None = None
+    # post_tool_env_restore：工具返回前是否把宿主 env 切回 Agent brain 的文本 env。
+    # 默认 False（与上游零回归）。单卡互斥部署需设为 True，否则 preflight 切走的
+    # wide-nsfw 不会被切回，Agent 下一次 LLM 调用必然 ECONNREFUSED。成因见
+    # server.agent_toolset.embedded._restore_text_env_after_tool。
+    post_tool_env_restore: bool | None = None
 
 
 class PreflightTestRequest(BaseModel):
@@ -471,6 +478,9 @@ async def get_system_config(
         # Agent auto 权限模式：缺省 true，与上游 ArcReel 行为一致（上游不设 permission_mode，
         # CLI 默认即 auto）。单卡单 slot 部署需显式关闭，成因见 lib.config.agent_auto_mode。
         "agent_auto_mode": parse_agent_auto_mode(all_s.get(AGENT_AUTO_MODE_SETTING)),
+        # 默认 False：未配置 = 不恢复 = 与上游一致。开启后每次 GPU 工具返回都会插一次
+        # env 切换（30–90s），属行为变更，先显式打开再评估是否改默认。
+        "post_tool_env_restore": parse_post_tool_env_restore(all_s.get(POST_TOOL_ENV_RESTORE_SETTING)),
     }
 
     options = await _build_options(svc, session, locale)
@@ -707,6 +717,8 @@ async def patch_system_config(
     # None = 不在本次 patch 范围内，保持原值不动——不能把「没传」和「设为关闭」混为一谈。
     if "agent_auto_mode" in patch and patch["agent_auto_mode"] is not None:
         await svc.set_setting(AGENT_AUTO_MODE_SETTING, "true" if patch["agent_auto_mode"] else "false")
+    if "post_tool_env_restore" in patch and patch["post_tool_env_restore"] is not None:
+        await svc.set_setting(POST_TOOL_ENV_RESTORE_SETTING, "true" if patch["post_tool_env_restore"] else "false")
 
     if "env_mapping" in patch and patch["env_mapping"] is not None:
         raw = str(patch["env_mapping"] or "")

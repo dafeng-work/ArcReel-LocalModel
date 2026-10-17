@@ -425,6 +425,10 @@ export default {
     'On: an extra LLM classification request before every tool call. If the inference server has only 1 slot (PARALLEL=1), that request waits on the main turn and the session can stall for a long time with no output — turn this off on single-GPU deployments.',
   'agent_auto_mode_warn_off':
     'Off: no LLM safety classification. Tool permissions are decided locally by PreToolUse hooks, the sandbox, and allow rules. Sessions no longer stall waiting on a classifier timeout.',
+  'post_tool_env_restore_label': 'Restore brain env after GPU tools',
+  'post_tool_env_restore_help': 'Image / video tools switch the host env to their model env before running; when enabled the brain text env is switched back after the tool returns.',
+  'post_tool_env_restore_warn_on': 'On: each GPU tool return costs one extra env switch (30–90s). That is the price of eliminating ECONNREFUSED — with it off the agent cannot reach the inference service after a GPU phase.',
+  'post_tool_env_restore_warn_off': 'Off (default, matches upstream): the env is not restored after a tool returns. With execution_mode exclusive, any image or video step leaves the agent unable to reach inference.',
   'capacity_queue_waiting': 'Queued: position {{position}} of {{waiting}} waiting, {{seconds}}s elapsed',
   'capacity_queue_cancel': 'Cancel queue',
   'env_mapping_section_title': 'Workflow step → env mapping',

@@ -36,6 +36,8 @@ export function ExecutionModePage() {
   const [executionMode, setExecutionMode] = useState<ExecutionMode>("multi");
   // 默认 true：与上游 ArcReel 一致（上游不设 permission_mode，CLI 默认即 auto）。
   const [agentAutoMode, setAgentAutoMode] = useState<boolean>(true);
+  // 默认 false（与上游一致）：不主动恢复 env。exclusive 模式下跑过 GPU 步骤后必须开启。
+  const [postToolEnvRestore, setPostToolEnvRestore] = useState<boolean>(false);
   const [envMapping, setEnvMapping] = useState<string>("");
   const [availableEnvs, setAvailableEnvs] = useState<string[]>([]);
   const [currentHostEnv, setCurrentHostEnv] = useState<string | null>(null);
@@ -47,6 +49,7 @@ export function ExecutionModePage() {
       const res: GetSystemConfigResponse = await API.getSystemConfig();
       setExecutionMode(res.settings.execution_mode ?? "multi");
       setAgentAutoMode(res.settings.agent_auto_mode ?? true);
+      setPostToolEnvRestore(res.settings.post_tool_env_restore ?? false);
       setEnvMapping(res.settings.env_mapping ?? "");
       setAvailableEnvs(res.options.available_envs ?? []);
       setCurrentHostEnv(res.options.current_host_env ?? null);
@@ -71,6 +74,7 @@ export function ExecutionModePage() {
         execution_mode: executionMode,
         env_mapping: envMapping,
         agent_auto_mode: agentAutoMode,
+        post_tool_env_restore: postToolEnvRestore,
       });
       setSaveOk(true);
       await refresh();
@@ -79,7 +83,7 @@ export function ExecutionModePage() {
     } finally {
       setSaving(false);
     }
-  }, [executionMode, envMapping, agentAutoMode, refresh]);
+  }, [executionMode, envMapping, agentAutoMode, postToolEnvRestore, refresh]);
 
   if (loading) {
     return (
@@ -99,6 +103,8 @@ export function ExecutionModePage() {
         onChange={setExecutionMode}
         currentHostEnv={currentHostEnv}
         autoMode={agentAutoMode}
+        postToolEnvRestore={postToolEnvRestore}
+        onPostToolEnvRestoreChange={setPostToolEnvRestore}
         onAutoModeChange={setAgentAutoMode}
       />
 

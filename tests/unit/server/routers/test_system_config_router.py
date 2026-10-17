@@ -172,6 +172,7 @@ class TestGetSystemConfig:
             "execution_mode",
             "env_mapping",
             "agent_auto_mode",
+            "post_tool_env_restore",
         }
         assert set(settings.keys()) == expected_keys
 
@@ -190,6 +191,30 @@ class TestGetSystemConfig:
             assert res.status_code == 200
             after = client.get("/api/v1/system/config").json()["settings"]
         assert after["agent_auto_mode"] is False
+
+    def test_post_tool_env_restore_defaults_off(self):
+        """缺省关闭（与上游一致、零回归）；exclusive 部署需显式开启。"""
+        mock_svc = _make_mock_svc()
+        with TestClient(_make_app_with_mock(mock_svc)) as client:
+            res = client.get("/api/v1/system/config")
+        assert res.json()["settings"]["post_tool_env_restore"] is False
+
+    def test_post_tool_env_restore_patch_round_trip(self):
+        """PATCH 可开启并回读。"""
+        mock_svc = _make_mock_svc()
+        with TestClient(_make_app_with_mock(mock_svc)) as client:
+            res = client.patch("/api/v1/system/config", json={"post_tool_env_restore": True})
+            assert res.status_code == 200
+            after = client.get("/api/v1/system/config").json()["settings"]
+        assert after["post_tool_env_restore"] is True
+
+    def test_post_tool_env_restore_patch_ignores_null(self):
+        """显式 null = 不在本次 patch 范围内，不得被当成「开启」写入。"""
+        mock_svc = _make_mock_svc()
+        with TestClient(_make_app_with_mock(mock_svc)) as client:
+            client.patch("/api/v1/system/config", json={"post_tool_env_restore": None})
+            after = client.get("/api/v1/system/config").json()["settings"]
+        assert after["post_tool_env_restore"] is False
 
     def test_agent_auto_mode_patch_ignores_null(self):
         """显式 null = 不在本次 patch 范围内，不应被当成「关闭」写入。"""
