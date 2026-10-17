@@ -174,13 +174,47 @@ def parse_execution_mode(raw: str) -> str:
     raise ValueError(f"execution_mode {value!r} is not valid; expected one of {sorted(VALID_EXECUTION_MODES)}")
 
 
+#: ``system_settings`` 中的键名：工具返回后是否把宿主 env 切回 Agent brain 的文本 env。
+POST_TOOL_ENV_RESTORE_SETTING = "post_tool_env_restore"
+
+#: 功能默认值。False = 关闭（与上游 100% 一致，零回归）。
+#:
+#: **为什么默认关**：开启后每次工具调用会在返回路径上多插一次 env 切换（30–90s）。
+#: 这是行为变更而非修 bug，先灰度再默认。单机单卡部署在设置页显式开启。
+POST_TOOL_ENV_RESTORE_DEFAULT = False
+
+#: 真值 / 假值接受写法（照抄既有 bool 设置的宽松口径，``video_generate_audio`` 同源）。
+_TRUTHY: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
+_FALSY: Final[frozenset[str]] = frozenset({"0", "false", "no", "off"})
+
+
+def parse_post_tool_env_restore(raw: str | None) -> bool:
+    """解析 ``system_settings.post_tool_env_restore``；缺省或不可判定时回退默认值 False。
+
+    DB 里没有该行 = 用户没配过 = 保持上游行为（不恢复），**不是「开启」**。
+    与 :func:`parse_agent_auto_mode` 同口径，两者默认值恰好相反（那里默认 True）。
+    """
+
+    if raw is None:
+        return POST_TOOL_ENV_RESTORE_DEFAULT
+    value = raw.strip().lower()
+    if value in _TRUTHY:
+        return True
+    if value in _FALSY:
+        return False
+    return POST_TOOL_ENV_RESTORE_DEFAULT
+
+
 __all__ = [
     "DEFAULT_ENV_MAPPING",
+    "POST_TOOL_ENV_RESTORE_DEFAULT",
+    "POST_TOOL_ENV_RESTORE_SETTING",
     "STEP_IDS",
     "VALID_EXECUTION_MODES",
     "effective_env_mapping",
     "list_available_envs",
     "parse_env_mapping",
     "parse_execution_mode",
+    "parse_post_tool_env_restore",
     "validate_env_mapping",
 ]

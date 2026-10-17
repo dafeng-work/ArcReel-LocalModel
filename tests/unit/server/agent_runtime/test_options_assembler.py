@@ -523,5 +523,23 @@ class TestLocalLlmWindowEnv:
         assert oa._local_llm_window_env("") == {}
 
     def test_declared_window_matches_llama_server_ctx_size(self):
-        """与 r9700-env 启动参数 --ctx-size 98304 对齐；改那边必须同步这里。"""
-        assert oa.LOCAL_LLM_CONTEXT_WINDOW_TOKENS == 98304
+        """与本机 brain env 的 --ctx-size 对齐。
+
+        当前 brain env 由 system_settings.env_mapping 的 episode_plan 决定（wide-nsfw），
+        对应 env/wide-nsfw.env 的 CTX=192000。改那个 env 的 CTX 时必须同步这里。
+        """
+        assert oa.LOCAL_LLM_CONTEXT_WINDOW_TOKENS == 192000
+
+    def test_window_env_var_overrides_constant(self, monkeypatch):
+        """env 覆盖优先于模块常量：换 brain env 时不必为改窗口重建镜像。"""
+        monkeypatch.setenv(oa.LOCAL_LLM_CONTEXT_WINDOW_ENV_VAR, "262144")
+        assert oa._local_llm_window_env("http://host.docker.internal:8080") == {
+            "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "262144",
+            "CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT": "1",
+        }
+
+    @pytest.mark.parametrize("bad", ["", "  ", "abc", "0", "-1"])
+    def test_bad_window_env_var_falls_back_to_constant(self, monkeypatch, bad):
+        """非法值（含空串）一律回落常量，绝不把垃圾值传给 CLI。"""
+        monkeypatch.setenv(oa.LOCAL_LLM_CONTEXT_WINDOW_ENV_VAR, bad)
+        assert oa._local_llm_context_window() == oa.LOCAL_LLM_CONTEXT_WINDOW_TOKENS

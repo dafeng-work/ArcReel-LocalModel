@@ -52,9 +52,49 @@ _EMBEDDED_AGENT_TOKEN_EXPIRY_SECONDS = 15 * 60
 CLI_STDOUT_MAX_BUFFER_BYTES = 32 * 1024 * 1024
 
 
-#: 本机 llama-server 的真实上下文窗口 —— 与 ``r9700-env`` 启动参数 ``--ctx-size 98304``
-#: 一致。改了那边记得同步这里，否则 auto-compact 会按错误的窗口排程。
-LOCAL_LLM_CONTEXT_WINDOW_TOKENS = 98304
+#: 本机 llama-server 的真实上下文窗口。
+#:
+#: **对应哪个 env**：本机 Agent 的 brain 文本 env 由 ``system_settings.env_mapping`` 的
+#: ``episode_plan`` / ``script_plan_content`` 决定，当前配置为 ``wide-nsfw``，
+#: 即 ``env/wide-nsfw.env`` 的 ``CTX=192000``（llama-server 以 ``--ctx-size 192000``
+#: 启动）。改那个 env 的 CTX 时**必须同步这里**，否则 auto-compact 按错误窗口排程，
+#: 压缩永不触发，然后被 llama-server 以 prompt-too-long 拒掉。
+#:
+#: 换 brain env 时的对应关系（``env/*.env`` 的 CTX）：
+#:   wide-nsfw 192000 · wide 192000 · fast 262144 · nsfw / nsfw-moe 98304 · novel 16384
+#: 不想为改窗口重建镜像时，设 :data:`LOCAL_LLM_CONTEXT_WINDOW_ENV_VAR` 覆盖即可。
+LOCAL_LLM_CONTEXT_WINDOW_TOKENS = 192000
+
+#: 服务进程级 env 覆盖（仅本机单卡部署适配存在，不进 CLI 子进程的 ``options.env``）。
+#: 取值必须是正整数；非法值回落到 :data:`LOCAL_LLM_CONTEXT_WINDOW_TOKENS` 并告警。
+LOCAL_LLM_CONTEXT_WINDOW_ENV_VAR = "ARCREEL_LOCAL_LLM_CONTEXT_WINDOW"
+
+
+def _local_llm_context_window() -> int:
+    """本机推理服务的上下文窗口真值，env 覆盖优先于模块常量。"""
+
+    raw = os.environ.get(LOCAL_LLM_CONTEXT_WINDOW_ENV_VAR, "").strip()
+    if not raw:
+        return LOCAL_LLM_CONTEXT_WINDOW_TOKENS
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "%s=%r is not an integer; falling back to %d",
+            LOCAL_LLM_CONTEXT_WINDOW_ENV_VAR,
+            raw,
+            LOCAL_LLM_CONTEXT_WINDOW_TOKENS,
+        )
+        return LOCAL_LLM_CONTEXT_WINDOW_TOKENS
+    if value <= 0:
+        logger.warning(
+            "%s=%d must be positive; falling back to %d",
+            LOCAL_LLM_CONTEXT_WINDOW_ENV_VAR,
+            value,
+            LOCAL_LLM_CONTEXT_WINDOW_TOKENS,
+        )
+        return LOCAL_LLM_CONTEXT_WINDOW_TOKENS
+    return value
 
 
 #: 指向本机推理服务的主机名。注意**不能**直接复用
@@ -94,7 +134,7 @@ def _local_llm_window_env(base_url: str | None) -> dict[str, str]:
     if host not in _LOCAL_LLM_HOSTS:
         return {}
     return {
-        "CLAUDE_CODE_MAX_CONTEXT_TOKENS": str(LOCAL_LLM_CONTEXT_WINDOW_TOKENS),
+        "CLAUDE_CODE_MAX_CONTEXT_TOKENS": str(_local_llm_context_window()),
         "CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT": "1",
     }
 
