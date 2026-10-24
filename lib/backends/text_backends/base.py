@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -84,6 +85,39 @@ class TextOutputTruncatedError(NonRetryableError):
         detail = f"在 output_tokens={output_tokens} 处" if output_tokens is not None else ""
         super().__init__(
             f"{provider}/{model} 的输出{detail}被模型输出上限截断，内容不完整。请改用输出能力更高的文本模型。"
+        )
+
+
+class TextReasoningBudgetExhaustedError(NonRetryableError):
+    """思考模型把输出预算全耗在思考过程上，正文（结构化输出即 JSON）为空。
+
+    思考模型（Qwen3 等）在部分 OpenAI 兼容服务上把思考写进独立的 ``reasoning_content``，
+    正文留在 ``content``。此时若思考吃光了输出预算，``content`` 为空而推理内容很长——
+    现象上与「模型没输出」相同，病因却不同：调高输出上限、换模型都不对症，出路是调低
+    该模型的思考档位 / 思考预算。不单独报出来的话，调用方只能看到「模型没输出」这种
+    没有出路的话。
+
+    继承 NonRetryableError 的理由同 :class:`TextOutputTruncatedError`：消息里嵌的思考
+    字符数是任意整数，其十进制文本可能偶然命中 with_retry_async 的瞬态错误模式。
+    """
+
+    def __init__(
+        self,
+        *,
+        provider: str,
+        model: str,
+        reasoning_chars: int,
+        max_output_tokens: int | None = None,
+    ):
+        self.provider = provider
+        self.model = model
+        self.reasoning_chars = reasoning_chars
+        self.max_output_tokens = max_output_tokens
+        budget = f"，输出上限 {max_output_tokens} token" if max_output_tokens is not None else ""
+        super().__init__(
+            f"{provider}/{model} 把输出预算全部耗在思考过程上，正文为空："
+            f"思考内容 {reasoning_chars} 字符{budget}。"
+            "请调低该文本模型的思考档位或思考预算，或改用解码更快的文本模型。"
         )
 
 
@@ -171,6 +205,28 @@ def strip_json_code_fence(text: str) -> str:
 # 只有病态超大批量，或用户配置了输出能力偏低的模型时才会命中。三处共用同一常量，调整只改
 # 这一处（见 docs/adr/0044）。
 DEFAULT_MAX_OUTPUT_TOKENS = 64000
+
+
+# 文本请求的墙钟超时预算。OpenAI SDK 的默认超时是固定 600s，与本次要生成多少 token
+# 无关：输出体量大的任务（整章剧本规划等）在本机慢速模型上会稳定撞线，被报成「请求超时」，
+# 而病因其实是「体量 × 解码速度」超出了固定墙钟。这里按最保守的解码速度反推所需时间，
+# 与 SDK 默认值取较大者——小请求行为完全不变（仍是 600s），大请求不再被固定墙钟截断。
+DEFAULT_TEXT_REQUEST_TIMEOUT_SECONDS = 600
+# 自托管 / 低端供应商的保守解码速度（token/秒）。取值低于实测（本地 27B Q4 约 50 tok/s），
+# 留出余量，避免刚好踩线。
+SLOWEST_ASSUMED_TOKENS_PER_SECOND = 20
+
+
+def text_request_timeout_seconds(max_output_tokens: int | None) -> float:
+    """按请求的输出体量估算超时预算（秒）。
+
+    ``max_output_tokens`` 为空或非正数时退回 SDK 默认值——此时输出体量未知，按最坏情况
+    放大预算只会让真正卡死的请求更久不被发现。
+    """
+    if not max_output_tokens or max_output_tokens <= 0:
+        return float(DEFAULT_TEXT_REQUEST_TIMEOUT_SECONDS)
+    scaled = math.ceil(max_output_tokens / SLOWEST_ASSUMED_TOKENS_PER_SECOND)
+    return float(max(DEFAULT_TEXT_REQUEST_TIMEOUT_SECONDS, scaled))
 
 
 def check_truncation(

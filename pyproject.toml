@@ -173,6 +173,18 @@ ignore_imports = [
     "lib.db.repositories.custom_provider_repo -> lib.custom_provider",
     "lib.db.repositories.custom_provider_repo -> lib.custom_provider.endpoints",
     "lib.db.models.custom_provider -> lib.custom_provider",
+    # 文本 env 前置闸门要按 provider_id 判定「是不是自定义供应商」（G4）：这条边把
+    # text_backends / text_generator 拉回 custom_provider 之下，按上面的口径掐终端边。
+    "lib.backends.text_env_gate -> lib.custom_provider",
+    # 同一条链上的后续终端边：text_env_gate 引 TaskRepository 查在跑任务，被它带进
+    # lib.generation.task_failure（该模块要认 ComfyUI 产物的后缀名）。
+    "lib.generation.task_failure -> lib.custom_provider.comfyui.artifacts",
+    "lib.generation.task_failure_encoding -> lib.custom_provider.comfyui.failures",
+    "lib.generation.task_failure_encoding -> lib.custom_provider.declarative_backend",
+    "lib.generation.generation_worker -> lib.custom_provider.discovery_formats",
+    "lib.generation.generation_worker -> lib.custom_provider.endpoint_resolution",
+    "lib.backends.generation_type_buckets -> lib.custom_provider.capabilities",
+    "lib.backends.generation_type_buckets -> lib.custom_provider.endpoints",
 ]
 
 # ComfyUI 端点定义不经声明式运行时（docs/adr/0081）：两种 kind 的定义不同构，共用的只有诊断载体、

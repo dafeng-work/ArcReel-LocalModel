@@ -12,15 +12,21 @@ from lib.backends.text_backends.base import (
     TextCapability,
     TextGenerationRequest,
     TextGenerationResult,
+    TextReasoningBudgetExhaustedError,
     TokenParam,
     check_truncation,
     merge_billed_tokens,
     resolve_schema,
     strip_leading_think_block,
     structured_fallback_reason,
+    text_request_timeout_seconds,
     truncate_for_log,
 )
-from lib.backends.text_env_gate import is_definite_upstream_unavailable, is_loopback_base_url
+from lib.backends.text_env_gate import (
+    is_definite_upstream_unavailable,
+    is_loopback_base_url,
+    is_read_timeout,
+)
 from lib.config.url_utils import is_official_openai_base_url
 from lib.infra.logging_utils import format_kwargs_for_log
 from lib.infra.retry import NonRetryableError, with_retry_async
@@ -160,6 +166,12 @@ class OpenAITextBackend:
         if request.max_output_tokens is not None:
             kwargs[self._max_tokens_param] = request.max_output_tokens
 
+        # 超时按本次输出体量给：SDK 默认的固定 600s 与要生成多少 token 无关，
+        # 输出体量大的任务（整章剧本规划等）在本机慢速模型上会稳定撞线。
+        # 只作用于本方法这条原生通道；Instructor 降级通道仍用客户端默认超时——
+        # 它只在供应商不支持 response_format 时才走，那类供应商的输出体量本就小。
+        timeout = text_request_timeout_seconds(request.max_output_tokens)
+
         if request.response_schema:
             schema = resolve_schema(request.response_schema)
             kwargs["response_format"] = {
@@ -173,7 +185,7 @@ class OpenAITextBackend:
 
         logger.info("调用 %s 文本 SDK kwargs=%s", self.name, format_kwargs_for_log(kwargs))
         try:
-            response = await self._client.chat.completions.create(**kwargs)
+            response = await self._client.chat.completions.create(**kwargs, timeout=timeout)
         except Exception as exc:
             if request.response_schema and _is_schema_error(exc):
                 logger.warning(
@@ -181,6 +193,22 @@ class OpenAITextBackend:
                     exc,
                 )
                 return None
+            # 读超时：上游还活着、只是没在墙钟预算内答完。它不是「上游不可达」
+            # （is_definite_upstream_unavailable 已排除读超时），病因通常是「输出体量 ×
+            # 解码速度」超出了墙钟，重发同一份请求多半还是超时。
+            if is_read_timeout(exc):
+                if is_loopback_base_url(self._base_url):
+                    # 本机网关背后是本地模型：耗时由体量与解码速度决定，重发不会更快，
+                    # 4 次重试只会把等待放大数倍。直接报可读原因，别让「超时」两个字
+                    # 盖住真正的病因。
+                    raise NonRetryableError(
+                        f"{self._provider_name}/{self._model} 文本请求超时："
+                        f"{timeout:.0f} 秒预算内上游没有返回"
+                        f"（本次请求输出上限 {request.max_output_tokens} token）。"
+                        "请改用解码更快或思考更短的文本模型。"
+                    ) from exc
+                # 远端端点：超时更可能是瞬时抖动，保持重试。
+                raise
             # 本机网关的上游没在跑时，重发同一份请求不会改变结果——只会把 4 次尝试、
             # 退避 2+4+8 秒（约 15 秒）的预算耗光，最后仍以同一个错误收场。包成
             # NonRetryableError 让 retry_async 立即短路；远端端点不在此列，保持重试。
@@ -192,6 +220,25 @@ class OpenAITextBackend:
         choice = response.choices[0]
         output_tokens = usage.completion_tokens if usage else None
         raw_text = choice.message.content or ""
+        # 思考模型在部分 OpenAI 兼容服务上把思考写进独立的 reasoning_content，正文留在
+        # content。思考吃光输出预算时 content 为空、推理内容却很长——这不是「模型没输出」，
+        # 出路是调低思考档位/预算或换更快的模型，单独报出来才有行动指引。
+        reasoning_raw = getattr(choice.message, "reasoning_content", None)
+        reasoning_text = reasoning_raw if isinstance(reasoning_raw, str) else ""
+        if not raw_text.strip() and reasoning_text.strip():
+            if request.response_schema:
+                raise TextReasoningBudgetExhaustedError(
+                    provider=self._provider_name,
+                    model=self._model,
+                    reasoning_chars=len(reasoning_text),
+                    max_output_tokens=request.max_output_tokens,
+                )
+            logger.warning(
+                "%s/%s 正文为空但输出了 %d 字符思考内容，思考可能吃光了输出预算",
+                self._provider_name,
+                self._model,
+                len(reasoning_text),
+            )
         # 思考模型默认把思考块内嵌在 content 开头，正文（结构化输出即 JSON）跟在其后；
         # 复验与返回都只看正文，思考块不进结果。
         text = strip_leading_think_block(raw_text)

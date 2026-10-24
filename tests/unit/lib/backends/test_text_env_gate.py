@@ -20,6 +20,7 @@ from lib.backends.text_env_gate import (
     ensure_text_provider_env,
     is_definite_upstream_unavailable,
     is_loopback_base_url,
+    is_read_timeout,
 )
 
 
@@ -279,4 +280,52 @@ async def test_remote_provider_failure_reraises_untouched() -> None:
     gen, request = _make_generator(_StubBackend(base_url="https://api.example.com/v1", exc=exc))
 
     with pytest.raises(openai.InternalServerError):
+        await gen.generate(request, project_name="demo")
+
+
+# ---- 读超时 ≠ 上游不可达 -------------------------------------------------
+
+
+def _api_timeout_error(cause: BaseException) -> openai.APITimeoutError:
+    """构造 openai SDK 把 httpx 超时包成 APITimeoutError 的形态（原始异常留在 __cause__）。"""
+    request = httpx.Request("POST", "http://127.0.0.1:8080/v1/chat/completions")
+    try:
+        raise cause
+    except BaseException as err:
+        try:
+            raise openai.APITimeoutError(request=request) from err
+        except openai.APITimeoutError as exc:
+            return exc
+
+
+def test_read_timeout_is_not_definite_upstream_unavailable() -> None:
+    """读超时：上游还活着、只是没在墙钟预算内答完 —— 不是「上游不可达」。
+
+    APITimeoutError 是 APIConnectionError 的子类，按连接类一刀切会把「慢」误判成
+    「没在跑」：重试被短路、问题票被翻译成上游不可达，真正病因被盖住。
+    """
+    exc = _api_timeout_error(httpx.ReadTimeout("read timeout"))
+    assert is_read_timeout(exc) is True
+    assert gate.classify_upstream_error(exc) is None
+    assert is_definite_upstream_unavailable(exc) is False
+
+
+def test_connect_timeout_still_counts_as_upstream_unavailable() -> None:
+    """连不上端口仍是确定性事实：重发不会变，按不可达短路。"""
+    exc = _api_timeout_error(httpx.ConnectTimeout("connect timeout"))
+    assert is_read_timeout(exc) is False
+    assert is_definite_upstream_unavailable(exc) is True
+
+
+def test_plain_read_timeout_is_detected() -> None:
+    assert is_read_timeout(httpx.ReadTimeout("read timeout")) is True
+    assert is_read_timeout(httpx.ConnectError("refused")) is False
+
+
+async def test_read_timeout_is_not_translated_to_provider_unavailable() -> None:
+    """读超时不走「上游不可达」翻译：调用方拿到的是超时本身，不是切 env 的提示。"""
+    exc = _api_timeout_error(httpx.ReadTimeout("read timeout"))
+    gen, request = _make_generator(_StubBackend(base_url="http://127.0.0.1:8080/v1", exc=exc))
+
+    with pytest.raises(openai.APITimeoutError):
         await gen.generate(request, project_name="demo")

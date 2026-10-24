@@ -166,17 +166,37 @@ def classify_upstream_error(exc: BaseException) -> int | None:
     return None
 
 
+def is_read_timeout(exc: BaseException) -> bool:
+    """判断异常是否为「读超时」——上游还活着，只是没在墙钟预算内答完。
+
+    openai SDK 把 httpx 的超时统一包成 ``APITimeoutError``，而它是 ``APIConnectionError``
+    的子类：按连接类异常一刀切，会把「上游活着、只是慢」误判成「上游不可达」，于是
+    重试被短路、问题票被翻译成「上游没在跑」，真正病因（输出体量太大 / 思考吃光预算）
+    被盖住。httpx 的原始异常保留在 ``__cause__`` 里，据此把读超时与连不上区分开：
+    ``httpx.ConnectTimeout`` 是真连不上（不可达），``httpx.ReadTimeout`` 只是没答完。
+    """
+    import httpx
+
+    if isinstance(exc, httpx.ReadTimeout):
+        return True
+    return isinstance(exc.__cause__, httpx.ReadTimeout)
+
+
 def is_definite_upstream_unavailable(exc: BaseException) -> bool:
     """本地端点上，这是一次「重发也不会变」的失败。
 
     判定口径：回环 base_url +（网关级状态码 502/503/504 或连接类异常）。连接类异常按
     类型判定而非消息文本，避免误伤真正携带 5xx 文本的业务错误。
+
+    读超时（上游活着、只是慢）不算不可达：重发有意义，且按不可达上报会把病因说错。
     """
     import httpx
     import openai
 
     if classify_upstream_error(exc) is not None:
         return True
+    if is_read_timeout(exc):
+        return False
     connection_types: tuple[type[BaseException], ...] = (
         httpx.ConnectError,
         httpx.ConnectTimeout,
@@ -193,4 +213,5 @@ __all__ = [
     "ensure_text_provider_env",
     "is_definite_upstream_unavailable",
     "is_loopback_base_url",
+    "is_read_timeout",
 ]
