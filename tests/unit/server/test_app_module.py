@@ -18,6 +18,11 @@ class _FakeWorker:
     def __init__(self):
         self.started = False
         self.stopped = False
+        self.reloaded = False
+
+    async def reload_limits(self):
+        # 启动序列会先从 DB 装载容量表再认领任务（见 test_worker_capacity_startup.py）。
+        self.reloaded = True
 
     async def start(self):
         self.started = True

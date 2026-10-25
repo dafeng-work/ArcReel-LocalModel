@@ -21,6 +21,10 @@ async def _noop_async(*args, **kwargs):
 
 
 class _FakeWorker:
+    async def reload_limits(self):
+        # 启动序列会先从 DB 装载容量表再认领任务（见 test_worker_capacity_startup.py）。
+        pass
+
     async def start(self):
         pass
 

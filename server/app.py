@@ -486,6 +486,18 @@ async def lifespan(app: FastAPI):
     logger.info("启动 GenerationWorker...")
     worker = create_generation_worker()
     app.state.generation_worker = worker
+    # 容量表必须先从 DB 装载、再让 worker 认领任务。
+    #
+    # ``GenerationWorker.__init__`` 用 ``CapacityTable.from_env()`` 建表，那张表只有内置
+    # 注册表里的 provider，**没有 ``custom-*`` 条目**；``CapacityTable.get`` 遇到未知
+    # provider 会回退 ``_defaults``（视频 3、图像 5）——那是给"provider 已被删除"的兜底，
+    # 不是给"provider 存在但没被装载"的兜底。结果自定义 ComfyUI 供应商（本机单卡）拿到
+    # 视频并发 3，多个视频任务同时抢同一张卡，显存被打爆（2026-10-19：一个任务 CUDA
+    # OOM 失败，随后 ComfyUI 在文本编码阶段 fatal abort 整个服务）。
+    #
+    # ``reload_limits`` 走 ``CapacityTable.from_db``，对 comfyui 协议且并发列为 NULL 的
+    # 自定义供应商给每条 lane 1（单卡语义），并对失败保持当前配置不阻断启动。
+    await worker.reload_limits()
     await worker.start()
     logger.info("GenerationWorker 已启动")
 

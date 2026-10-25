@@ -37,10 +37,13 @@ async def test_lifespan_invokes_session_store_migration(tmp_path, monkeypatch):
         patch("server.app.close_db", new=AsyncMock(return_value=None)),
     ):
         # Mock the worker so its start() / stop() are awaitables, no-op.
+        # reload_limits 同理：启动序列会先从 DB 装载容量表再认领任务（见
+        # tests/unit/server/test_worker_capacity_startup.py）。
         worker_factory.return_value = type(
             "W",
             (),
             {
+                "reload_limits": AsyncMock(),
                 "start": AsyncMock(),
                 "stop": AsyncMock(),
             },
