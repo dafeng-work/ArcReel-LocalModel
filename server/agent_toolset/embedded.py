@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
 from claude_agent_sdk import McpSdkServerConfig
@@ -57,6 +57,23 @@ logger = logging.getLogger(__name__)
 _INFLIGHT_TOOLS = 0
 
 
+#: 读 ``system_settings`` 全量映射的 seam —— 调用方（主要是测试）可显式注入自己的实现。
+#:
+#: **为什么留这个口**：此前唯一的入口是模块私有的 ``_load_execution_settings``，测试
+#: 只能靠 monkeypatch 打私有符号来喂数据——那正是 ``scripts/audit_tests.py`` 的
+#: PRIVATE-PATCH 规则要挡的写法。改成显式参数注入后，依赖在调用点可见，被测函数
+#: 也不再依赖模块全局。
+LoadExecutionSettingsFn = Callable[[], Awaitable[dict[str, str] | None]]
+
+
+def inflight_tool_count() -> int:
+    """当前进程内正在执行的工具调用数。
+
+    公开读口：并发闸的判据要能被观察（而不只是被 patch），否则测试只能去碰私有全局。
+    """
+    return _INFLIGHT_TOOLS
+
+
 async def _load_execution_settings() -> dict[str, str] | None:
     """读 ``system_settings`` 全量映射；失败返回 ``None``（调用方据此旁路，不阻断工具调用）。"""
 
@@ -71,20 +88,28 @@ async def _load_execution_settings() -> dict[str, str] | None:
         return None
 
 
-async def _preflight_for_tool(tool_name: str) -> str | None:
+async def _preflight_for_tool(
+    tool_name: str,
+    *,
+    load_settings: LoadExecutionSettingsFn | None = None,
+) -> str | None:
     """G3 单机单卡互斥：MCP 工具调用前确保宿主 env 已切到目标；返回错误码或 ``None``。
 
     不需要 preflight 的工具（``step_for_tool`` 返回 ``None``）直接放行，零切换开销。
     ``execution_mode != "exclusive"`` 也直接放行（与上游 ArcReel 行为一致，零回归）。
     失败时返回稳定的错误码（``env_switch_failed`` / ``env_switch_timeout`` 等），
     由调用方包装成 ``ToolOutcome(problem=ToolProblem(code, ...))`` 返回给 Agent。
+
+    ``load_settings`` 是读 ``system_settings`` 的显式注入口（见
+    :data:`LoadExecutionSettingsFn`）；缺省走模块默认实现。
     """
 
     step_id = step_for_tool(tool_name)
     if step_id is None:
         return None
 
-    all_settings = await _load_execution_settings()
+    resolved_load_settings = load_settings if load_settings is not None else _load_execution_settings
+    all_settings = await resolved_load_settings()
     if all_settings is None:
         return None
 
@@ -119,7 +144,12 @@ async def _preflight_for_tool(tool_name: str) -> str | None:
     return None
 
 
-async def _restore_text_env_after_tool(tool_name: str) -> str | None:
+async def _restore_text_env_after_tool(
+    tool_name: str,
+    *,
+    load_settings: LoadExecutionSettingsFn | None = None,
+    inflight_tools: int | None = None,
+) -> str | None:
     """工具返回后把宿主 env 切回 Agent brain 的文本 env。返回诊断码或 ``None``。
 
     **为什么需要**：``_preflight_for_tool`` 只在**调用前**切 env。GPU 类工具执行期间
@@ -139,20 +169,25 @@ async def _restore_text_env_after_tool(tool_name: str) -> str | None:
     3. 本工具与 brain 同 env（连续文本阶段，切了也白切 30–90s）；
     4. 当前 env 已是 brain 文本 env（没切走过）。
 
-    另有**并发闸**：:data:`_INFLIGHT_TOOLS` 非零时不恢复——同一回合并发发出的
-    工具里，先完成的那个若立刻切回 brain env，会把另一个正在生成中的任务连同
-    它的 env 一起换掉。
+    另有**并发闸**：在途工具数非零时不恢复——同一回合并发发出的工具里，先完成的
+    那个若立刻切回 brain env，会把另一个正在生成中的任务连同它的 env 一起换掉。
+
+    两个显式注入口：``load_settings`` 换掉读 ``system_settings`` 的实现，
+    ``inflight_tools`` 换掉并发闸的判据（缺省读进程内计数，见
+    :func:`inflight_tool_count`）。
     """
 
-    if _INFLIGHT_TOOLS != 0:
-        logger.info("post-tool restore: skipped for %s — %d tool call(s) still in flight", tool_name, _INFLIGHT_TOOLS)
+    inflight = _INFLIGHT_TOOLS if inflight_tools is None else inflight_tools
+    if inflight != 0:
+        logger.info("post-tool restore: skipped for %s — %d tool call(s) still in flight", tool_name, inflight)
         return None
 
     step_id = step_for_tool(tool_name)
     if step_id is None:
         return None
 
-    all_settings = await _load_execution_settings()
+    resolved_load_settings = load_settings if load_settings is not None else _load_execution_settings
+    all_settings = await resolved_load_settings()
     if all_settings is None:
         return None
 

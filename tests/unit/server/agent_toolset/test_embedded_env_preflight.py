@@ -4,12 +4,15 @@
 **失败语义**——后者是本改动最容易做错的地方：切回失败一旦转成 tool error，
 Agent 会重试，而重试等于重跑整批 GPU 生成。
 
-全部用 monkeypatch 打掉 ``embedded`` 模块命名空间里的依赖，不触达真实 I/O。
+依赖一律走**显式参数注入**的 seam：读 ``system_settings`` 的实现由
+``load_settings`` 传入，并发闸的判据由 ``inflight_tools`` 传入。不 patch
+``embedded`` 模块的私有符号（那是 ``scripts/audit_tests.py`` 的 PRIVATE-PATCH
+规则要挡的写法，也会让被测行为随模块内部改名而漂移）。
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, NamedTuple
 
 import pytest
 
@@ -17,6 +20,15 @@ from lib.infra.env_preflight import EnvSwitchBusy, EnvSwitchFailed
 from server.agent_toolset import embedded as em
 
 pytestmark = pytest.mark.unit
+
+
+class _Seams(NamedTuple):
+    """测试注入的 seam 与观测点。"""
+
+    #: 每次 ``ensure_env`` 的目标 env，按调用顺序。
+    calls: list[str]
+    #: 读 ``system_settings`` 的替身实现，显式传给被测函数。
+    load_settings: em.LoadExecutionSettingsFn
 
 
 def _settings(**overrides: str) -> dict[str, str]:
@@ -39,8 +51,9 @@ def _install(
     settings: dict[str, str],
     current: str,
     step: str | None,
-) -> list[str]:
-    """接好全部 seam，返回记录 ``ensure_env`` 调用目标的列表。"""
+) -> _Seams:
+    """接好全部 seam，返回注入点与 ``ensure_env`` 调用记录。"""
+
     calls: list[str] = []
 
     async def _load() -> dict[str, str]:
@@ -52,12 +65,11 @@ def _install(
     async def _resolve(*, read_settings_async: Any = None) -> str:
         return "wide-nsfw"
 
-    monkeypatch.setattr(em, "_load_execution_settings", _load)
     monkeypatch.setattr(em, "ensure_env", _ensure_env)
     monkeypatch.setattr(em, "resolve_text_env_async", _resolve)
     monkeypatch.setattr(em, "step_for_tool", lambda _name: step)
     monkeypatch.setattr(em, "read_current_host_env", lambda _path=None: current)
-    return calls
+    return _Seams(calls=calls, load_settings=_load)
 
 
 class TestShortCircuits:
@@ -65,44 +77,44 @@ class TestShortCircuits:
 
     @pytest.mark.asyncio
     async def test_multi_mode_never_switches(self, monkeypatch):
-        calls = _install(
+        seams = _install(
             monkeypatch,
             settings=_settings(execution_mode="multi"),
             current="video-ltx23-sulphur",
             step="video",
         )
-        assert await em._restore_text_env_after_tool("generate_videos") is None
-        assert calls == []
+        assert await em._restore_text_env_after_tool("generate_videos", load_settings=seams.load_settings) is None
+        assert seams.calls == []
 
     @pytest.mark.asyncio
     async def test_gate_off_by_default_never_switches(self, monkeypatch):
         """开关缺省即关闭 —— 与上游零回归，DB 没配过不等于开启。"""
         settings = _settings()
         settings.pop("post_tool_env_restore")
-        calls = _install(monkeypatch, settings=settings, current="video-ltx23-sulphur", step="video")
-        assert await em._restore_text_env_after_tool("generate_videos") is None
-        assert calls == []
+        seams = _install(monkeypatch, settings=settings, current="video-ltx23-sulphur", step="video")
+        assert await em._restore_text_env_after_tool("generate_videos", load_settings=seams.load_settings) is None
+        assert seams.calls == []
 
     @pytest.mark.asyncio
     async def test_tool_without_env_mapping_never_switches(self, monkeypatch):
         """``step_for_tool`` 返回 None = 该工具本来就不切 env，无需恢复。"""
-        calls = _install(monkeypatch, settings=_settings(), current="image-qwen21", step=None)
-        assert await em._restore_text_env_after_tool("read_source_text") is None
-        assert calls == []
+        seams = _install(monkeypatch, settings=_settings(), current="image-qwen21", step=None)
+        assert await em._restore_text_env_after_tool("read_source_text", load_settings=seams.load_settings) is None
+        assert seams.calls == []
 
     @pytest.mark.asyncio
     async def test_same_env_as_brain_never_switches(self, monkeypatch):
         """连续文本阶段：工具 env 与 brain env 相同，切了也是白切 30–90s。"""
-        calls = _install(monkeypatch, settings=_settings(), current="image-qwen21", step="episode_plan")
-        assert await em._restore_text_env_after_tool("plan_episodes") is None
-        assert calls == []
+        seams = _install(monkeypatch, settings=_settings(), current="image-qwen21", step="episode_plan")
+        assert await em._restore_text_env_after_tool("plan_episodes", load_settings=seams.load_settings) is None
+        assert seams.calls == []
 
     @pytest.mark.asyncio
     async def test_already_at_brain_env_never_switches(self, monkeypatch):
         """没切走过就无需恢复。"""
-        calls = _install(monkeypatch, settings=_settings(), current="wide-nsfw", step="video")
-        assert await em._restore_text_env_after_tool("generate_videos") is None
-        assert calls == []
+        seams = _install(monkeypatch, settings=_settings(), current="wide-nsfw", step="video")
+        assert await em._restore_text_env_after_tool("generate_videos", load_settings=seams.load_settings) is None
+        assert seams.calls == []
 
     @pytest.mark.asyncio
     async def test_skipped_while_another_tool_is_in_flight(self, monkeypatch):
@@ -111,34 +123,35 @@ class TestShortCircuits:
         embedded 路径下 GPU 工具是「入队 + 阻塞等批次终态」，两个不同 env 的生成
         可能同时在跑；此时切走 env 等于杀掉在途生成，而这种误杀无法兜底。
         """
-        calls = _install(monkeypatch, settings=_settings(), current="image-qwen21", step="video")
-        monkeypatch.setattr(em, "_INFLIGHT_TOOLS", 1)
-        assert await em._restore_text_env_after_tool("generate_videos") is None
-        assert calls == []
+        seams = _install(monkeypatch, settings=_settings(), current="image-qwen21", step="video")
+        result = await em._restore_text_env_after_tool(
+            "generate_videos", load_settings=seams.load_settings, inflight_tools=1
+        )
+        assert result is None
+        assert seams.calls == []
 
     @pytest.mark.asyncio
     async def test_inflight_counter_returns_to_zero_after_call(self, monkeypatch):
         """计数不得泄漏——泄漏会让恢复被永久跳过。"""
-        assert em._INFLIGHT_TOOLS == 0
-        calls = _install(monkeypatch, settings=_settings(), current="image-qwen21", step="video")
-        monkeypatch.setattr(em, "_INFLIGHT_TOOLS", 0)
-        await em._restore_text_env_after_tool("generate_videos")
-        assert em._INFLIGHT_TOOLS == 0
-        assert calls == ["wide-nsfw"]
+        assert em.inflight_tool_count() == 0
+        seams = _install(monkeypatch, settings=_settings(), current="image-qwen21", step="video")
+        await em._restore_text_env_after_tool("generate_videos", load_settings=seams.load_settings)
+        assert em.inflight_tool_count() == 0
+        assert seams.calls == ["wide-nsfw"]
 
 
 class TestHappyPath:
     @pytest.mark.asyncio
     async def test_switches_back_to_brain_env_after_gpu_tool(self, monkeypatch):
-        calls = _install(monkeypatch, settings=_settings(), current="video-ltx23-sulphur", step="video")
-        assert await em._restore_text_env_after_tool("generate_videos") is None
-        assert calls == ["wide-nsfw"]
+        seams = _install(monkeypatch, settings=_settings(), current="video-ltx23-sulphur", step="video")
+        assert await em._restore_text_env_after_tool("generate_videos", load_settings=seams.load_settings) is None
+        assert seams.calls == ["wide-nsfw"]
 
     @pytest.mark.asyncio
     async def test_switches_back_after_image_tool(self, monkeypatch):
-        calls = _install(monkeypatch, settings=_settings(), current="image-qwen21", step="asset_sheets")
-        assert await em._restore_text_env_after_tool("generate_assets") is None
-        assert calls == ["wide-nsfw"]
+        seams = _install(monkeypatch, settings=_settings(), current="image-qwen21", step="asset_sheets")
+        assert await em._restore_text_env_after_tool("generate_assets", load_settings=seams.load_settings) is None
+        assert seams.calls == ["wide-nsfw"]
 
 
 class TestFailureSemantics:
@@ -155,10 +168,11 @@ class TestFailureSemantics:
             if attempts["n"] == 1:
                 raise EnvSwitchFailed(target, 1, "transient")
 
-        _install(monkeypatch, settings=_settings(), current="image-qwen21", step="video")
+        seams = _install(monkeypatch, settings=_settings(), current="image-qwen21", step="video")
         monkeypatch.setattr(em, "ensure_env", _flaky)
 
-        assert await em._restore_text_env_after_tool("generate_videos") is None
+        result = await em._restore_text_env_after_tool("generate_videos", load_settings=seams.load_settings)
+        assert result is None
         assert calls == ["wide-nsfw", "wide-nsfw"]
 
     @pytest.mark.asyncio
@@ -169,11 +183,12 @@ class TestFailureSemantics:
             calls.append(target)
             raise EnvSwitchFailed(target, 1, "boom")
 
-        _install(monkeypatch, settings=_settings(), current="image-qwen21", step="video")
+        seams = _install(monkeypatch, settings=_settings(), current="image-qwen21", step="video")
         monkeypatch.setattr(em, "ensure_env", _always_fail)
 
         # 返回诊断码而非抛出：上层只记日志，tool outcome 仍是成功结果。
-        assert await em._restore_text_env_after_tool("generate_videos") == "post_tool_env_restore_failed"
+        result = await em._restore_text_env_after_tool("generate_videos", load_settings=seams.load_settings)
+        assert result == "post_tool_env_restore_failed"
         assert calls == ["wide-nsfw", "wide-nsfw"]
 
     @pytest.mark.asyncio
@@ -185,10 +200,11 @@ class TestFailureSemantics:
             calls.append(target)
             raise EnvSwitchBusy(target)
 
-        _install(monkeypatch, settings=_settings(), current="image-qwen21", step="video")
+        seams = _install(monkeypatch, settings=_settings(), current="image-qwen21", step="video")
         monkeypatch.setattr(em, "ensure_env", _busy)
 
-        assert await em._restore_text_env_after_tool("generate_videos") == "post_tool_env_restore_busy"
+        result = await em._restore_text_env_after_tool("generate_videos", load_settings=seams.load_settings)
+        assert result == "post_tool_env_restore_busy"
         assert calls == ["wide-nsfw"], "忙路径不应重试"
 
     @pytest.mark.asyncio
@@ -196,10 +212,11 @@ class TestFailureSemantics:
         async def _boom(target: str, **_: Any) -> None:
             raise RuntimeError("unexpected")
 
-        _install(monkeypatch, settings=_settings(), current="image-qwen21", step="video")
+        seams = _install(monkeypatch, settings=_settings(), current="image-qwen21", step="video")
         monkeypatch.setattr(em, "ensure_env", _boom)
 
-        assert await em._restore_text_env_after_tool("generate_videos") == "post_tool_env_restore_failed"
+        result = await em._restore_text_env_after_tool("generate_videos", load_settings=seams.load_settings)
+        assert result == "post_tool_env_restore_failed"
 
     @pytest.mark.asyncio
     async def test_settings_read_failure_bypasses(self, monkeypatch):
@@ -208,9 +225,9 @@ class TestFailureSemantics:
         async def _fail() -> None:
             return None
 
-        monkeypatch.setattr(em, "_load_execution_settings", _fail)
         monkeypatch.setattr(em, "step_for_tool", lambda _name: "video")
-        assert await em._restore_text_env_after_tool("generate_videos") is None
+        result = await em._restore_text_env_after_tool("generate_videos", load_settings=_fail)
+        assert result is None
 
 
 class TestPreflightUnchanged:
@@ -218,15 +235,15 @@ class TestPreflightUnchanged:
 
     @pytest.mark.asyncio
     async def test_preflight_still_switches_for_mismatched_env(self, monkeypatch):
-        calls = _install(monkeypatch, settings=_settings(), current="wide-nsfw", step="video")
-        assert await em._preflight_for_tool("generate_videos") is None
-        assert calls == ["video-ltx23-sulphur"]
+        seams = _install(monkeypatch, settings=_settings(), current="wide-nsfw", step="video")
+        assert await em._preflight_for_tool("generate_videos", load_settings=seams.load_settings) is None
+        assert seams.calls == ["video-ltx23-sulphur"]
 
     @pytest.mark.asyncio
     async def test_preflight_reports_failure_as_error_code(self, monkeypatch):
         async def _fail(target: str, **_: Any) -> None:
             raise EnvSwitchFailed(target, 1, "boom")
 
-        _install(monkeypatch, settings=_settings(), current="wide-nsfw", step="video")
+        seams = _install(monkeypatch, settings=_settings(), current="wide-nsfw", step="video")
         monkeypatch.setattr(em, "ensure_env", _fail)
-        assert await em._preflight_for_tool("generate_videos") == "env_switch_failed"
+        assert await em._preflight_for_tool("generate_videos", load_settings=seams.load_settings) == "env_switch_failed"

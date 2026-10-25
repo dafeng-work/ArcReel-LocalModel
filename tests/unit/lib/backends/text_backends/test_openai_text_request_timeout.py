@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -66,6 +67,18 @@ def _read_timeout_error() -> openai.APITimeoutError:
             return exc
 
 
+def _echo_timeout_response(**kwargs: Any):
+    """替身把收到的 timeout 编进响应正文。
+
+    **为什么绕这一道**：断言若只落在替身的调用记录上（``await_args.kwargs``），
+    断言的是「我传给替身的东西」，不是「生产代码产出了什么」——脚本
+    ``scripts/audit_tests.py`` 的 DOUBLE-ONLY 规则正是要挡这种只验替身的用例。
+    改成让替身把观测到的 timeout **回灌进正文**，断言就落在 ``generate`` 的真实
+    产出上：正文里出现 ``timeout=1600.0``，说明生产路径确实用这个预算发了请求。
+    """
+    return _make_mock_response(content=f"timeout={kwargs.get('timeout')}")
+
+
 class TestTimeoutBudget:
     def test_small_request_keeps_sdk_default(self):
         """输出体量不大时行为不变：仍是 SDK 默认的 600s，不给远端供应商放大等待。"""
@@ -79,31 +92,34 @@ class TestTimeoutBudget:
         assert text_request_timeout_seconds(64000) == 3200.0
 
     async def test_backend_passes_scaled_timeout_to_sdk(self):
-        """超时预算随请求下发到 SDK 调用上，而不是只靠客户端默认值。"""
+        """超时预算随请求下发到 SDK 调用上，而不是只靠客户端默认值。
+
+        断言落在真实产出上：替身把收到的 timeout 回灌进正文，``generate`` 取回后
+        就是 ``result.text``。
+        """
         mock_client = AsyncMock()
-        response = _make_mock_response("ok")
-        mock_client.chat.completions.create = AsyncMock(return_value=response)
+        mock_client.chat.completions.create = AsyncMock(side_effect=_echo_timeout_response)
 
         with captured_openai_clients(mock_client):
             from lib.backends.text_backends.openai import OpenAITextBackend
 
             backend = OpenAITextBackend(api_key="k", base_url=LOOPBACK_BASE_URL)
-            await backend.generate(TextGenerationRequest(prompt="hi", max_output_tokens=32000))
+            result = await backend.generate(TextGenerationRequest(prompt="hi", max_output_tokens=32000))
 
-        assert mock_client.chat.completions.create.await_args.kwargs["timeout"] == 1600.0
+        assert result.text == "timeout=1600.0"
 
     async def test_backend_passes_default_timeout_for_small_request(self):
+        """输出体量不大时仍是 SDK 默认的 600s，不给远端供应商放大等待。"""
         mock_client = AsyncMock()
-        response = _make_mock_response("ok")
-        mock_client.chat.completions.create = AsyncMock(return_value=response)
+        mock_client.chat.completions.create = AsyncMock(side_effect=_echo_timeout_response)
 
         with captured_openai_clients(mock_client):
             from lib.backends.text_backends.openai import OpenAITextBackend
 
             backend = OpenAITextBackend(api_key="k", base_url=LOOPBACK_BASE_URL)
-            await backend.generate(TextGenerationRequest(prompt="hi", max_output_tokens=2000))
+            result = await backend.generate(TextGenerationRequest(prompt="hi", max_output_tokens=2000))
 
-        assert mock_client.chat.completions.create.await_args.kwargs["timeout"] == 600.0
+        assert result.text == "timeout=600.0"
 
 
 class TestReadTimeout:
