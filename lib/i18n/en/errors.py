@@ -183,6 +183,7 @@ MESSAGES = {
     "env_switch_timeout": "Env switch timed out before the new model became ready; check arcreel-env-gate.sh logs",
     "env_switch_failed": "Env switch failed (arcreel-env-gate.sh exited with non-zero status or ready probe never got 2xx); see server log for stderr tail",
     "env_switch_busy": "GPU is busy with another batch: the env mutex (run/env.lock) could not be acquired and no switch was attempted. Retry once the current batch finishes",
+    "resource_group_busy": "GPU resource group '{group}' is held by {holder}. This request was not queued and not charged. Retry once the holder finishes",
     "workflow_dispatch_action_not_preflight": "workflow-dispatch endpoint only accepts PREFLIGHT_ENV_SWITCH next_action",
     # G4 text model env preflight gate
     "invalid_env_name": "'{name}' is not an env on this host; available: {available}",

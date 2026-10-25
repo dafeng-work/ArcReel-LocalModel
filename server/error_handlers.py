@@ -19,9 +19,10 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from lib.generation.generation_queue import ActiveTaskRequestConflict
+from lib.generation.generation_queue import ActiveTaskRequestConflict, ResourceGroupBusy
 from lib.generation.generation_queue_client import TaskSpecValidationError
 from lib.i18n import render_generation_input_error, render_message
+from lib.i18n.display_names import DisplayNames
 from lib.infra.api_errors import ApiError
 from lib.script.script_editor import ScriptEditError
 from server.i18n import get_translator, request_display_names
@@ -71,6 +72,22 @@ def _cors_headers_for(
         headers["Vary"] = "Origin"
 
     return headers
+
+
+def _resource_group_holder(exc: ResourceGroupBusy, names: DisplayNames) -> str:
+    """把 owner（``provider_id:media_type``）还原成用户认得的称呼。
+
+    目录里查得到的供应商换成显示名；查不到的**保留 ID**——这里不用
+    ``DisplayNames.provider()``，它会回退成「已删除的供应商」，而一个只是没被查到的
+    供应商并没有被删除，那样讲等于在响应里撒谎。``held_by`` 为空（读不到 lease owner）
+    时退回资源组名，保证文案里永远有可填的实参：``_()`` 遇到缺参数会静默返回未格式化的
+    模板原文，用户会直接看到 ``{group}`` 这种裸占位符。
+    """
+    provider_id, _, media_type = (exc.held_by or "").partition(":")
+    if not provider_id:
+        return exc.group
+    label = names.providers.get(provider_id, provider_id)
+    return f"{label}（{media_type}）" if media_type else label
 
 
 def register_error_handlers(
@@ -131,6 +148,20 @@ def register_error_handlers(
             status_code=409,
             content={"detail": detail},
         )
+
+    @app.exception_handler(ResourceGroupBusy)
+    async def _handle_resource_group_busy(request: Request, exc: ResourceGroupBusy) -> JSONResponse:
+        # 资源组被别的 provider 持锁 → 409「资源冲突、可重试」，不是服务器故障。
+        #
+        # 此前此异常没有任何 handler，冒泡进 `@app.exception_handler(Exception)` → 通用 500
+        # 「服务器内部错误，请稍后再试」——用户既看不到「GPU 正被占用」这个可操作的事实，
+        # 也不知道本次提交**未入队、未计费**，于是反复重试。
+        _t = get_translator(request)
+        names = await request_display_names(request)
+        detail = await present_request_diagnostics(
+            _t("resource_group_busy", group=exc.group, holder=_resource_group_holder(exc, names)), request, _t
+        )
+        return JSONResponse(status_code=409, content={"detail": detail})
 
     @app.exception_handler(ScriptEditError)
     async def _handle_script_edit_error(request: Request, exc: ScriptEditError) -> JSONResponse:
