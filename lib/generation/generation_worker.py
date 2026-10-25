@@ -602,6 +602,13 @@ class GenerationWorker:
                         taskless_started_before=None if self._startup_settled else self._constructed_at
                     )
                     self._startup_settled = True
+                    # G1 资源组锁回收必须排在上面两步之后：running 孤儿先被收成终态，
+                    # 持锁方才可能真的「没有活」，锁才可安全释放（见 GenerationQueue.
+                    # release_orphan_gpu_resource_group_locks 的说明）。
+                    try:
+                        await self.queue.release_orphan_gpu_resource_group_locks()
+                    except Exception:
+                        logger.warning("回收孤儿 GPU 资源组锁失败", exc_info=True)
                     self._orphan_handled_once = True
 
                 if not self._owns_lease:

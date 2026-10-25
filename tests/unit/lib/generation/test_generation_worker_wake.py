@@ -19,6 +19,9 @@ class _WakeQueue:
     async def release_worker_lease(self, **_kwargs: Any) -> None:
         return None
 
+    async def release_orphan_gpu_resource_group_locks(self) -> int:
+        return 0
+
     async def list_orphan_tasks_on_start(self) -> list[dict[str, Any]]:
         return []
 

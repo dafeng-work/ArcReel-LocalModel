@@ -20,6 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from lib.backends.backend_runtime import install_provider_job_id_store
 from lib.db import safe_session_factory
 from lib.db.base import DEFAULT_USER_ID, utc_now
+from lib.db.repositories.base import rowcount
 from lib.db.repositories.task_repo import TaskNotCancellableError, TaskRepository
 from lib.generation.generation_admission import generation_admission_lock
 from lib.generation.generation_batch import (
@@ -94,8 +95,11 @@ class ResourceGroupBusy(RuntimeError):
     入队时若派生到的 provider 配了 ``exclusive_resource_group``，且 ``media_type`` 属于
     image / video（text / audio 走原并发），调度器先抢 ``name = "group:<group>"`` 的
     worker_lease 行；已被其它 provider 持锁（且未过期）则抛此异常，调用方需等待。
-    抢到锁后**不主动释放**——lease_until 兜底（默认 600s，video 任务最长也跑不完）。
-    下一个 task 入队时会因 lease 未过期而抢不到，自然串行。
+
+    锁的生命周期对齐真实负载：持锁方的任务到达终态、且该 lane 再无 queued / running
+    任务时，锁由 :meth:`GenerationQueue._release_gpu_resource_group_lock_if_idle` 释放；
+    抢锁时 lease_until 仍作兜底（默认 600s，video 任务最长也跑不完），防止 worker
+    崩溃后锁被无限期遗忘。
     """
 
     def __init__(self, *, group: str, held_by: str | None) -> None:
@@ -398,12 +402,41 @@ class GenerationQueue:
     #     同 provider 同媒体类型可续约；同 provider 跨媒体类型（image vs video）必须互斥，
     #     否则合并后的 gateway provider 会让 image 与 video 并发抢同一张卡。
     #     跨 provider 同 group 互斥；跨 group 不互斥。
-    #   * 入队后**不**主动释放——靠 lease_until（600s，video 任务最长也跑不完）自然过期。
-    #     下一个 task 入队时会因 lease 未过期而抢不到，自然串行；这是单卡单 worker 场景下
-    #     最简且贴合实际的释放策略。
-    #   * null group 维持原行为；多 worker 部署需主动释放（这是已知的非目标场景）。
+    #   * 锁在**持锁方任务到达终态且该 lane 再无排队/执行中任务时释放**（fork 扩展）：
+    #     只靠 lease_until 自然过期会让「持锁任务早已跑完、锁却还挂 10 分钟」，
+    #     别的 lane 入队被 409 挡在门外，提示「GPU 正被 image 占用」与实况不符。
+    #     lease_until 仍作兜底（worker 崩溃等异常路径下锁不会无限期滞留）。
     _GPU_RESOURCE_GROUP_LEASE_TTL = 600.0
     _G1_GUARDED_MEDIA_TYPES = frozenset({"image", "video"})
+
+    @classmethod
+    def _g1_guards_lane(cls, *, media_type: str, task_type: str) -> bool:
+        """该 lane 是否受 G1 资源组锁约束（image / video 受约束，text / audio 不受）。"""
+        return media_type in cls._G1_GUARDED_MEDIA_TYPES or task_type in ("video", "reference_video")
+
+    async def _gpu_resource_group_for_provider(self, provider_id: str | None) -> str | None:
+        """查 provider 配的 ``exclusive_resource_group``。
+
+        非自定义 provider（内置供应商走 RENDER_MEDIA_TYPE / text）、ID 解析失败、
+        或该 provider 未配资源组时都返回 None——三种情况都不进 G1 锁。
+        """
+        if not provider_id:
+            return None
+
+        from lib.custom_provider import is_custom_provider, parse_provider_id
+
+        if not is_custom_provider(provider_id):
+            return None
+        try:
+            db_id = parse_provider_id(provider_id)
+        except (TypeError, ValueError):
+            return None
+
+        from lib.db.repositories.custom_provider_repo import CustomProviderRepository
+
+        async with self._session_factory() as session:
+            cp_repo = CustomProviderRepository(session)
+            return await cp_repo.get_exclusive_resource_group(db_id)
 
     async def _enforce_gpu_resource_group_lock(
         self,
@@ -413,31 +446,10 @@ class GenerationQueue:
         task_type: str,
     ) -> None:
         """G1 入队前资源组互斥。"""
-        if provider_id is None:
-            return
-        # 派生出来的 provider 不一定是 custom-*：内置供应商走 RENDER_MEDIA_TYPE / text。
-        # 解析失败（不是 custom 前缀）→ 跳过。
-        from lib.custom_provider import is_custom_provider, parse_provider_id
-
-        if not is_custom_provider(provider_id):
-            return
-        if media_type not in self._G1_GUARDED_MEDIA_TYPES and task_type not in (
-            "video",
-            "reference_video",
-        ):
-            return
-        try:
-            db_id = parse_provider_id(provider_id)
-        except (TypeError, ValueError):
+        if not self._g1_guards_lane(media_type=media_type, task_type=task_type):
             return
 
-        # 查 group 名字
-        from lib.db.repositories.custom_provider_repo import CustomProviderRepository
-
-        group: str | None
-        async with self._session_factory() as session:
-            cp_repo = CustomProviderRepository(session)
-            group = await cp_repo.get_exclusive_resource_group(db_id)
+        group = await self._gpu_resource_group_for_provider(provider_id)
         if not group:
             return
 
@@ -490,6 +502,159 @@ class GenerationQueue:
             row = (await session.execute(select(WorkerLease.owner_id).where(WorkerLease.name == lease_name))).first()
         return row[0] if row else None
 
+    async def _release_gpu_resource_group_lock_if_idle(
+        self,
+        *,
+        provider_id: str | None,
+        media_type: str | None,
+        task_type: str | None = None,
+    ) -> bool:
+        """持锁方该 lane 已无排队/执行中任务时，释放 G1 资源组锁。返回是否真的释放。
+
+        为什么需要它：G1 的锁在**入队时**抢，而任务终态不释放、只靠 lease_until 自然过期。
+        于是持锁任务早已跑完（例如 image 出图 15:01:14 就 succeeded），锁却还挂到 15:10:53，
+        期间另一个 lane（image ↔ video）入队被 409 挡在门外，提示「GPU 正被 image 占用」
+        ——与实况不符：本机只有一张卡，但卡此刻是空的。
+
+        释放条件是「持锁方该 lane 没有排队/执行中的任务」：同 lane 还有任务排队时锁留着
+        （那些任务还没跑，仍要占卡）；跨 lane 的锁互不影响（锁的 owner 带着 media_type）。
+
+        判活与删锁在**同一会话**里做，并按 ``updated_at`` 做乐观并发守卫：同 lane 有新任务
+        入队时会续约这把锁（updated_at 随之前进），此时本次删除命中 0 行、不动锁——否则
+        「刚续约的锁被并发删掉」会让同 lane 的新任务裸奔上卡。
+        """
+        if not provider_id or not media_type:
+            return False
+        if not self._g1_guards_lane(media_type=media_type, task_type=task_type or ""):
+            return False
+
+        group = await self._gpu_resource_group_for_provider(provider_id)
+        if not group:
+            return False
+
+        owner_key = f"{provider_id}:{media_type}"
+        lease_name = f"group:{group}"
+        async with self._session_factory() as session:
+            from sqlalchemy import delete, func, select
+
+            from lib.db.models.task import Task, WorkerLease
+
+            lease = (
+                await session.execute(select(WorkerLease).where(WorkerLease.name == lease_name))
+            ).scalar_one_or_none()
+            if lease is None or lease.owner_id != owner_key:
+                # 锁不在这个 lane 手上（别的 provider / 别的媒体类型），不碰。
+                return False
+            # 先判活再动锁：持锁方还有活 → 锁留着（那些任务还没跑，仍要占卡）。
+            active = (
+                await session.execute(
+                    select(func.count())
+                    .select_from(Task)
+                    .where(
+                        Task.provider_id == provider_id,
+                        Task.media_type == media_type,
+                        Task.status.in_(("queued", "running")),
+                    )
+                )
+            ).scalar_one()
+            if active:
+                return False
+            # updated_at 守卫：入队续约发生在本次读取之后 → updated_at 已变 → 命中 0 行，不删。
+            result = await session.execute(
+                delete(WorkerLease).where(
+                    WorkerLease.name == lease_name,
+                    WorkerLease.owner_id == owner_key,
+                    WorkerLease.updated_at == lease.updated_at,
+                )
+            )
+            if not rowcount(result):
+                await session.rollback()
+                return False
+            await session.commit()
+        logger.info("释放 GPU 资源组锁 group=%s owner=%s（持锁方该 lane 已无排队/执行中任务）", group, owner_key)
+        return True
+
+    async def _release_gpu_resource_group_locks_for_terminal_events(self, events: list[dict[str, Any]]) -> None:
+        """任务终态后按 lane 释放 G1 资源组锁（终态是「该 lane 的活干完了」的信号）。
+
+        覆盖 succeeded / failed / cancelled / interrupted：凡是任务离开活跃态，都可能让
+        某个 lane 空下来。释放失败只记日志，不影响任务本身的终态。
+        """
+        if not events:
+            return
+        task_ids = [str(event.get("task_id") or "") for event in events]
+        task_ids = [task_id for task_id in task_ids if task_id]
+        if not task_ids:
+            return
+
+        from sqlalchemy import select
+
+        from lib.db.models.task import Task
+
+        try:
+            async with self._session_factory() as session:
+                rows = (
+                    await session.execute(
+                        select(Task.task_id, Task.provider_id, Task.media_type, Task.task_type).where(
+                            Task.task_id.in_(task_ids)
+                        )
+                    )
+                ).all()
+        except Exception:
+            logger.warning("读取终态任务失败，GPU 资源组锁未释放", exc_info=True)
+            return
+
+        # 同一批次可能有多个任务落在同一个 lane 上，按 lane 去重后再判活。
+        lanes = {(row.provider_id, row.media_type, row.task_type) for row in rows if row.provider_id}
+        for provider_id, media_type, task_type in lanes:
+            try:
+                await self._release_gpu_resource_group_lock_if_idle(
+                    provider_id=provider_id,
+                    media_type=media_type,
+                    task_type=task_type,
+                )
+            except Exception:
+                logger.warning("释放 GPU 资源组锁失败 provider=%s media=%s", provider_id, media_type, exc_info=True)
+
+    async def release_orphan_gpu_resource_group_locks(self) -> int:
+        """回收「持锁方已无活跃任务」的孤儿 G1 资源组锁，返回回收条数。
+
+        worker 崩溃 / 被 SIGKILL 时任务行可能停在 running 或已被清理，锁会一直挂到
+        lease_until 过期（默认 600s）。重启自愈把 running 孤儿收成终态后，本方法按
+        各 lane 的活跃任务数回收锁：下一次入队不必干等一个 TTL。
+
+        只动 ``name`` 以 ``group:`` 开头的行，worker 自己的心跳租约（``name='default'``）
+        不在其内。
+        """
+        from sqlalchemy import select
+
+        from lib.db.models.task import WorkerLease
+
+        async with self._session_factory() as session:
+            leases = (
+                (await session.execute(select(WorkerLease).where(WorkerLease.name.like("group:%")))).scalars().all()
+            )
+        if not leases:
+            return 0
+
+        released = 0
+        for lease in leases:
+            owner_id = lease.owner_id or ""
+            provider_id, _, media_type = owner_id.partition(":")
+            if not provider_id or not media_type:
+                continue
+            try:
+                if await self._release_gpu_resource_group_lock_if_idle(
+                    provider_id=provider_id,
+                    media_type=media_type,
+                ):
+                    released += 1
+            except Exception:
+                logger.warning("回收孤儿 GPU 资源组锁失败 owner=%s", owner_id, exc_info=True)
+        if released:
+            logger.info("回收孤儿 GPU 资源组锁 %d 条", released)
+        return released
+
     @asynccontextmanager
     async def _task_repo(self) -> AsyncGenerator[TaskRepository]:
         """打开一条 TaskRepository 会话，退出时把落地的任务终态发上项目事件总线。
@@ -498,12 +663,18 @@ class GenerationQueue:
         body 抛异常时会话不提交、发布也不发生——没有终态落库就没有终态可通告。
 
         本类所有方法一律经此入口拿 repo，终态事件的发布因而是结构保证而非每处记得挂钩：
-        新增写终态的方法自动获得发布，不会漏。
+        新增写终态的方法自动获得发布，不会漏。G1 资源组锁的释放同样挂在这里：终态是
+        「某个 lane 的活干完了」的信号，锁的生命周期由此对齐真实负载。
         """
         async with self._session_factory() as session:
             repo = TaskRepository(session)
             yield repo
         emit_task_terminal_events(repo.terminal_events)
+        # 锁维护失败不得影响任务终态：任务已经落库，锁只是运行期台账。
+        try:
+            await self._release_gpu_resource_group_locks_for_terminal_events(repo.terminal_events)
+        except Exception:
+            logger.warning("释放 GPU 资源组锁失败（不影响任务终态）", exc_info=True)
 
     async def enqueue_task(
         self,
