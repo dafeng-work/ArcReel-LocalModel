@@ -370,6 +370,7 @@ def test_probe_urls_for_comfyui_env_only_probes_comfyui_endpoint() -> None:
         "video-h3",
         "video-h3-nsfw",
         "video-h3-ref",
+        "video-h3-ref-nsfw",
         "video-h3-lowvram",
     ):
         assert pe.probe_urls_for_env(env) == (pe.COMFYUI_PROBE_URL,), env
