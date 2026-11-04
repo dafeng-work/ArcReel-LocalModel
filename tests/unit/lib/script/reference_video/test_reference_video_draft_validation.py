@@ -9,9 +9,12 @@ from lib.script.reference_video.draft_validation import (
     DraftViolation,
     DraftViolations,
     assert_dialogue_preserved,
+    contact_pose_marker,
     dialogue_speakers,
     normative_lines,
     validate_dialogue_load,
+    validate_pose_lock,
+    validate_pose_spec,
     validate_source_text_anchor,
     validate_unit_text,
 )
@@ -323,6 +326,119 @@ class TestDialoguePreserved:
     def test_dropped_dialogue_rejected(self):
         with pytest.raises(DraftViolation, match="台词条数被改动"):
             assert_dialogue_preserved("unit E1U01", self.SCRIPT_PLAN, "镜头1：@[李明] 推门")
+
+
+class TestPoseContract:
+    """L4+ 显性接触姿态契约机检：标记触发 + 三个新违约码。
+
+    触发条件 = 正文含 `[接触 L4/L5 · …]` 标记行；无标记单元全部新码静默（向后兼容）。
+    标记契约载体是 `text` 正文首行——`source_text` 是逐字锚，校验器不允许任何附加。
+    """
+
+    MARK = "[接触 L4 · 传教士体位 · 支撑：双膝+双臂]"
+    #: 骨架句 = 标记行整行（标记 + 上下位 + 支撑点）：姿态锁比对的是整行，不是光秃秃的 `[…]` token。
+    SKELETON = MARK + " @[李明] 位于她上方，双膝跪在床面、双臂撑在她头侧床面、骨盆与她的骨盆对齐贴合。"
+
+    def _good_text(self) -> str:
+        return (
+            f"{self.SKELETON}\n"
+            "她的头枕在枕面、双臂环过他后颈、双手插进他后发、双腿打开、双脚脚掌踩在床面、骨盆与他对齐；"
+            "他的头低靠她肩侧、双臂撑床、双膝跪在床面。\n"
+            "她的双腿完整、双脚踩在床面全程保持在画面内。\n"
+            "运镜：固定中景，双人全身入画。"
+        )
+
+    # -- contact_pose_marker ------------------------------------------------
+
+    def test_skeleton_line_extracted(self):
+        assert contact_pose_marker(self._good_text()) == self.SKELETON
+
+    def test_marker_absent_returns_none(self):
+        assert contact_pose_marker("@[李明] 推开酒馆的门") is None
+
+    def test_marker_separator_variants_accepted(self):
+        """分隔符形态随输入法漂移（· / ・ / . / ．），标记识别不能跟着漂。"""
+        assert contact_pose_marker("[接触 L4·传教士体位 · 支撑：双膝]") is not None
+        assert contact_pose_marker("[接触L5. 高潮段]") is not None
+        assert contact_pose_marker("[接触 L3 · 吻]") is None
+
+    # -- pose_spec_missing ----------------------------------------------------
+
+    def test_full_spec_accepted(self):
+        assert validate_pose_spec("unit E1U01", self._good_text()) is None
+
+    def test_missing_limb_table_rejected(self):
+        text = (
+            f"{self.MARK} @[李明] 位于她上方。\n"
+            "她的双腿完整、双脚踩在床面全程保持在画面内。\n"
+            "运镜：固定中景，双人全身入画。"
+        )
+        with pytest.raises(DraftViolation, match="肢位表") as exc_info:
+            validate_pose_spec("unit E1U01", text)
+        assert exc_info.value.code == "pose_spec_missing"
+
+    def test_missing_completeness_declaration_rejected(self):
+        text = (
+            f"{self.MARK} @[李明] 位于她上方，双膝跪在床面、双臂撑床、骨盆贴合。\n"
+            "她的头枕枕面、双臂环过他后颈、双腿打开、双脚踩床面、骨盆对齐；他的头低靠、双臂撑床、双膝跪床。\n"
+            "运镜：固定中景，双人全身入画。"
+        )
+        with pytest.raises(DraftViolation, match="完整性/出框声明") as exc_info:
+            validate_pose_spec("unit E1U01", text)
+        assert exc_info.value.code == "pose_spec_missing"
+
+    def test_missing_frame_lower_bound_rejected(self):
+        text = (
+            f"{self.MARK} @[李明] 位于她上方，双膝跪在床面、双臂撑床、骨盆贴合。\n"
+            "她的头枕枕面、双臂环过他后颈、双腿打开、双脚踩床面、骨盆对齐；她的双腿完整、双脚踩在床面全程保持在画面内。\n"
+            "运镜：缓慢推近。"
+        )
+        with pytest.raises(DraftViolation, match="取景下界") as exc_info:
+            validate_pose_spec("unit E1U01", text)
+        assert exc_info.value.code == "pose_spec_missing"
+
+    def test_below_l4_text_silent(self):
+        """无标记单元（L4 以下）静默：七条款骨架下界不生效，向后兼容。"""
+        assert validate_pose_spec("unit E1U01", "@[李明] 与 @[王五] 在 @[酒馆] 对坐喝酒") is None
+
+    # -- relational_word_found（经 validate_unit_text 全链路） -------------------
+
+    def test_blacklist_word_in_marked_unit_rejected(self):
+        text = (
+            f"{self.MARK} @[李明] 与她在 @[酒馆] 的床面上身体交叠。\n"
+            "她的头枕枕面、双臂环过他后颈、双腿打开、双脚踩床面、骨盆对齐；她的双腿完整、双脚踩在床面全程保持在画面内。\n"
+            "运镜：固定中景，双人全身入画。"
+        )
+        with pytest.raises(DraftViolation, match="关系词黑名单") as exc_info:
+            validate_unit_text("unit E1U01", text, PROJECT, max_refs=None)
+        assert exc_info.value.code == "relational_word_found"
+
+    def test_blacklist_word_without_marker_silent(self):
+        """无标记单元命中黑名单词不判违约：契约只约束自证 L4+ 的单元。"""
+        refs = validate_unit_text("unit E1U01", "@[李明] 与 @[王五] 在 @[酒馆] 身体交叠", PROJECT, max_refs=None)
+        assert [r.name for r in refs] == ["李明", "王五", "酒馆"]
+
+    # -- pose_lock_broken ------------------------------------------------------
+
+    def test_identical_skeleton_accepted(self):
+        assert validate_pose_lock("unit E1U02", self._good_text(), self.SKELETON) is None
+
+    def test_whitespace_difference_tolerated(self):
+        """空白 / 编码形式差异不算漂移：两侧按同一归一口径比对。"""
+        drifted = self.SKELETON.replace(" ", "  ")
+        assert validate_pose_lock("unit E1U02", drifted, self.SKELETON) is None
+
+    def test_drifted_skeleton_rejected(self):
+        with pytest.raises(DraftViolation, match="姿态锁被破坏") as exc_info:
+            validate_pose_lock("unit E1U02", f"[接触 L4 · 侧卧体位 · 支撑：左肘] 其余正文……", self.MARK)
+        assert exc_info.value.code == "pose_lock_broken"
+
+    def test_chain_reset_by_non_contact_unit(self):
+        """非接触单元是 unit 边界：链重置后换骨架合法，不再判漂移。"""
+        assert validate_pose_lock("unit E1U03", f"[接触 L4 · 侧卧体位 · 支撑：左肘] 其余正文……", None) is None
+
+    def test_unmarked_unit_silent(self):
+        assert validate_pose_lock("unit E1U02", "@[李明] 转身离开", self.MARK) is None
 
 
 class TestNeutralLayerReexport:

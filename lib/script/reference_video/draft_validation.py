@@ -21,6 +21,8 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections.abc import Collection, Container
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from lib.project.asset_types import asset_name_comparison_key
@@ -278,6 +280,7 @@ def validate_unit_text(
     admission = admit_script_unit("video_units", {"unit_id": canonical_unit_id, "text": text})
     if not admission.allowed:
         raise DraftViolations([_speech_problem_violation(problem) for problem in admission.problems])
+    _validate_relational_words(label, text)
     return refs
 
 
@@ -360,17 +363,134 @@ def assert_dialogue_preserved(label: str, script_plan_text: str, prompt_authorin
             )
 
 
+# ---------------------------------------------------------------------------
+# 显性接触（L4+）姿态契约机检
+#
+# 标记 `[接触 L4 · <体位> · 支撑：<点>]` 写在 script_plan 阶段该 unit 的 `text` 正文首行
+# （`source_text` 是逐字锚、不允许任何附加，标记不进去），prompt_authoring 把它原样保留为
+# 主体段首句——标记即本组判定的触发条件与姿态锁契约载体：带标记的单元按七条款骨架机检，
+# 不带标记的单元（L4 以下）全部新码静默，对既有单元零影响。
+# 已知盲区：L4+ 内容但漏写标记的单元机检不到——模板要求正文自证分级、验收清单兜底，
+# 首版通过率指标决定是否补强。
+# ---------------------------------------------------------------------------
+
+#: 标记正则：半角方括号 + 接触 + L4/L5 + 分隔符（· / ・ / . / ． 各输入法形态都认）。
+_CONTACT_MARK_RE = re.compile(r"\[接触\s*L[45]\s*[·・.．]")
+
+#: 肢位表关键词表：六组 × 两人逐字判不了，取去重关键词命中数做下界。
+_POSE_BODY_PART_KEYWORDS = ("头", "臂", "手", "腿", "脚", "骨盆", "膝", "大腿", "髋", "腰")
+_POSE_MIN_BODY_PARTS = 5
+
+#: 易掉肢体完整性 / 出框声明关键词表。
+_POSE_COMPLETENESS_KEYWORDS = ("完整", "出框", "画外", "画面内", "画面下缘", "保持在场", "存在于", "留在画面")
+
+#: 取景下界关键词表：景别词 + 入画声明，两者同时出现才算声明过。
+_POSE_SHOT_SIZE_KEYWORDS = ("中景", "全景", "远景")
+_POSE_FRAME_KEYWORDS = ("入画", "入镜", "全身")
+
+#: 关系词黑名单数据文件（一行一词，`#` 注释）：词表维护不动代码。
+_RELATIONAL_BLACKLIST_PATH = Path(__file__).resolve().parents[2] / "prompts" / "prompt_rules" / "relational_word_blacklist.txt"
+
+
+@lru_cache(maxsize=1)
+def _load_relational_blacklist() -> tuple[str, ...]:
+    words: list[str] = []
+    for line in _RELATIONAL_BLACKLIST_PATH.read_text(encoding="utf-8").splitlines():
+        word = line.strip()
+        if word and not word.startswith("#"):
+            words.append(word)
+    return tuple(words)
+
+
+def contact_pose_marker(text: str) -> str | None:
+    """取 unit 正文里的姿态标记行（首个含 `[接触 L4/L5 …]` 的非空行）；无标记返回 None。
+
+    返回原始行（未归一）——姿态锁比对时两侧各自归一，调用方展示用原形。
+    """
+    for line in text.splitlines():
+        if _CONTACT_MARK_RE.search(line):
+            return line.strip()
+    return None
+
+
+def _validate_relational_words(label: str, text: str) -> None:
+    """L4+ 单元正文关系词黑名单判：命中任一词即违约（词表见数据文件）。"""
+    if contact_pose_marker(text) is None:
+        return
+    hits = [word for word in _load_relational_blacklist() if word in text]
+    if hits:
+        raise DraftViolation(
+            f"{label} 的 L4+ 单元正文命中关系词黑名单: {'、'.join(hits)}；"
+            "关系词零几何锚点，须改写为解剖位置词（谁的上肢 / 下肢 / 骨盆在哪、撑在哪）",
+            code="relational_word_found",
+            label=label,
+        )
+
+
+def validate_pose_spec(label: str, text: str) -> None:
+    """L4+ 单元正文七条款骨架下界机检（prompt_authoring 阶段）。
+
+    只对带标记的单元生效（无标记静默——向后兼容）。四项骨架按关键词锚点判，缺项合并成
+    一条 ``pose_spec_missing``：肢位表（去重肢体关键词 ≥5）、易掉肢体完整性 / 出框声明、
+    取景下界（景别词 + 入画声明同时出现）。骨架声明首句即标记行本身——能走到这里即已满足，
+    不重复判。
+    """
+    if contact_pose_marker(text) is None:
+        return
+    missing: list[str] = []
+    body_part_hits = sum(1 for keyword in _POSE_BODY_PART_KEYWORDS if keyword in text)
+    if body_part_hits < _POSE_MIN_BODY_PARTS:
+        missing.append(f"肢位表（肢体关键词 {body_part_hits}/{_POSE_MIN_BODY_PARTS}）")
+    if not any(keyword in text for keyword in _POSE_COMPLETENESS_KEYWORDS):
+        missing.append("易掉肢体完整性/出框声明")
+    if not (
+        any(keyword in text for keyword in _POSE_SHOT_SIZE_KEYWORDS)
+        and any(keyword in text for keyword in _POSE_FRAME_KEYWORDS)
+    ):
+        missing.append("取景下界（景别+入画声明）")
+    if missing:
+        raise DraftViolation(
+            f"{label} 的 L4+ 单元正文缺姿态规格项: {'、'.join(missing)}；"
+            "按七条款扩写（骨架声明/肢位表/完整性声明/运动几何化/取景下界/措辞表/姿态锁）",
+            code="pose_spec_missing",
+            label=label,
+        )
+
+
+def validate_pose_lock(label: str, text: str, previous_skeleton: str | None) -> None:
+    """姿态锁：连续 L4+ 单元的标记行须与上一 L4+ 单元逐字一致（空白归一后）。
+
+    ``previous_skeleton`` 是紧邻前一 L4+ 单元的标记行；None 表示链已断（无前一 L4+ 单元，
+    或中间隔着非接触单元——unit 边界即换体位的合法位置）。无标记单元静默，调用方据此
+    重置链。
+    """
+    marker = contact_pose_marker(text)
+    if marker is None:
+        return
+    if previous_skeleton is not None and _normalize_for_anchor(marker) != _normalize_for_anchor(previous_skeleton):
+        raise DraftViolation(
+            f"{label} 的姿态锁被破坏：标记行与前一 L4+ 单元不一致"
+            f"（前：{previous_skeleton[:40]!r} / 本：{marker[:40]!r}）；"
+            "连续 L4+ 单元骨架句须逐字一致，换体位必须在独立 unit 边界",
+            code="pose_lock_broken",
+            label=label,
+        )
+
+
 __all__ = [
     "SPEECH_OVERFLOW_TOLERANCE",
     "DraftViolation",
     "DraftViolations",
     "assert_dialogue_preserved",
     "collect_violations",
+    "contact_pose_marker",
     "dialogue_speakers",
     "is_verbatim_source_anchor",
     "normative_lines",
     "render_violation_report",
     "validate_dialogue_load",
+    "validate_pose_lock",
+    "validate_pose_spec",
     "validate_source_text_anchor",
     "validate_unit_text",
     "violation_items",

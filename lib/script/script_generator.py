@@ -105,8 +105,11 @@ from lib.script.reference_video.draft_validation import (
     DraftViolation,
     DraftViolations,
     assert_dialogue_preserved,
+    contact_pose_marker,
     dialogue_speakers,
     validate_dialogue_load,
+    validate_pose_lock,
+    validate_pose_spec,
     validate_unit_text,
     violation_items,
 )
@@ -1666,6 +1669,9 @@ class ScriptGenerator:
 
         authored: list[dict] = []
         violations: list[DraftViolation] = []
+        # 姿态锁链状态：上一 L4+ 单元的标记行；None = 链已断（无标记单元即 unit 边界，
+        # 换体位的合法位置）。只对带 `[接触 L4/L5 …]` 标记的单元生效，其余单元零影响。
+        prev_skeleton: str | None = None
         for index, (unit, flat_unit) in enumerate(zip(units, flat.units, strict=True)):
             label = f"unit {unit['unit_id']}"
             # 逐 unit 收集而非首个违约即抛：报告要覆盖所有坏 unit，Agent 一轮就能看全要改什么。
@@ -1679,12 +1685,16 @@ class ScriptGenerator:
                     tolerated_speakers=dialogue_speakers(str(unit.get("text") or "")),
                 )
                 assert_dialogue_preserved(label, str(unit.get("text") or ""), flat_unit.text)
+                validate_pose_spec(label, flat_unit.text)
+                validate_pose_lock(label, flat_unit.text, prev_skeleton)
             except DraftViolation as exc:
                 items = violation_items(exc)
                 locate_violations(items, item_index=index, item_id=str(unit["unit_id"]))
                 violations.extend(items)
+                prev_skeleton = contact_pose_marker(flat_unit.text)
                 continue
             authored.append({**unit, "text": flat_unit.text})
+            prev_skeleton = contact_pose_marker(flat_unit.text)
 
         if violations:
             raise DraftViolations(violations)
