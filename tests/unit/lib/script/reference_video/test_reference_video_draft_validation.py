@@ -12,8 +12,12 @@ from lib.script.reference_video.draft_validation import (
     contact_pose_marker,
     dialogue_speakers,
     normative_lines,
+    pose_mark_token,
     validate_dialogue_load,
+    validate_mention_closure,
+    validate_plan_pose_marker,
     validate_pose_lock,
+    validate_pose_plan_alignment,
     validate_pose_spec,
     validate_source_text_anchor,
     validate_unit_text,
@@ -439,6 +443,167 @@ class TestPoseContract:
 
     def test_unmarked_unit_silent(self):
         assert validate_pose_lock("unit E1U02", "@[李明] 转身离开", self.MARK) is None
+
+
+class TestPoseMarkToken:
+    """``pose_mark_token``：取括号段 token（不含行内后续骨架句），供 plan↔prompt 逐字对齐。"""
+
+    def test_token_extracted_without_skeleton(self):
+        text = "[接触 L4 · 传教士体位 · 支撑：双膝+双臂] @[李明] 位于她上方，双膝跪在床面。"
+        assert pose_mark_token(text) == "[接触 L4 · 传教士体位 · 支撑：双膝+双臂]"
+
+    def test_token_only_line(self):
+        assert pose_mark_token("[接触 L5 · 侧卧 · 支撑：左肘]") == "[接触 L5 · 侧卧 · 支撑：左肘]"
+
+    def test_no_marker_returns_none(self):
+        assert pose_mark_token("镜头1：@[李明] 推门") is None
+
+
+class TestDerivativeHardCheck:
+    """P0-1 衍生名硬校验：裸 ``@本体/衍生`` 的衍生段必须登记在该本体名下。
+
+    解析器 legacy 字符集不含 ``/``，裸提及在斜线处停笔——未登记衍生（如男性专属衍生挂到
+    女性角色）静默回落到本体、漏过 missing。``pending_derivative_references`` 恢复完整引用
+    名，``validate_unit_text`` 据此判登记；包裹形式 ``@[本体/衍生]`` 仍走 missing 判定。
+    """
+
+    def test_registered_bare_derivative_accepted(self):
+        """裸 ``@李明/劲装``：劲装已登记在李明名下，不判未登记衍生。"""
+        validate_unit_text("unit E1U01", "镜头1：@李明/劲装 推门", DERIVATIVE_PROJECT, max_refs=None)
+
+    def test_unregistered_bare_derivative_rejected(self):
+        """裸 ``@李明/夜行衣``：夜行衣没登记在李明名下 → unregistered_reference_derivative。"""
+        with pytest.raises(DraftViolation, match="引用了未登记的衍生") as exc_info:
+            validate_unit_text("unit E1U01", "镜头1：@李明/夜行衣 推门", DERIVATIVE_PROJECT, max_refs=None)
+        assert exc_info.value.code == "unregistered_reference_derivative"
+
+    def test_wrapped_unregistered_derivative_uses_missing_path(self):
+        """包裹形式 ``@[李明/夜行衣]`` 由 missing 判定拦（unregistered_asset），不走衍生硬校验。"""
+        with pytest.raises(DraftViolation, match="未登记的资产名") as exc_info:
+            validate_unit_text("unit E1U01", "镜头1：@[李明/夜行衣] 推门", DERIVATIVE_PROJECT, max_refs=None)
+        assert exc_info.value.code == "unregistered_asset"
+
+
+class TestMentionClosure:
+    """P0-2 提及集合闭环：prompt 正文的每个 ``@`` 提及须来自 plan 对应单元或已登记角色表。
+
+    已登记名字恒允许（同一角色可换衍生写法）；未登记名字已由 ``unregistered_asset`` /
+    ``unregistered_reference_derivative`` 拦下，本检查只判「plan 外」这一维度——幽灵名字类漂移。
+    """
+
+    def test_prompt_stays_within_plan_mention_set(self):
+        plan = "镜头1：@[李明] 在 @[酒馆] 推门\n@[李明]：{我来了。}"
+        prompt = "镜头1：@[李明] 推开 @[酒馆] 的门"
+        assert validate_mention_closure("unit E1U01", plan, prompt, PROJECT) is None
+
+    def test_ghost_character_in_prompt_rejected(self):
+        """「瑟琳」事件：上游各层 0 处、prompt 层凭空出现的未登记新角色。"""
+        plan = "镜头1：@[李明] 推门\n@[李明]：{我来了。}"
+        prompt = "镜头1：@[李明] 与 @瑟琳 在 @[酒馆]"
+        with pytest.raises(DraftViolation, match="引入了脚本规划中没有的角色") as exc_info:
+            validate_mention_closure("unit E1U01", plan, prompt, PROJECT)
+        assert exc_info.value.code == "unplanned_character"
+        assert "瑟琳" in str(exc_info.value)
+
+    def test_registered_character_not_in_plan_allowed(self):
+        """已登记角色恒允许：plan 只写了李明，prompt 出现已登记的王五不算新增角色。"""
+        plan = "镜头1：@[李明] 推门"
+        prompt = "镜头1：@[王五] 接过东西"
+        assert validate_mention_closure("unit E1U01", plan, prompt, PROJECT) is None
+
+
+class TestPosePlanAlignment:
+    """P1 体位契约逐字化：prompt 的 L4+ 标记行须与 plan 标记行逐字一致（NFC 归一比）。
+
+    双向对称：prompt 有标记而 plan 无 → ``pose_plan_missing``；两侧不一致 → ``pose_plan_drift``；
+    plan 有标记而 prompt 无 → ``pose_plan_missing``。两侧都无标记静默（向后兼容）。
+    """
+
+    PLAN_MARK = "[接触 L4 · 传教士体位 · 支撑：双膝+双臂] @[李明] 位于她上方，双膝跪在床面。"
+    PLAN = f"{PLAN_MARK}\n她的头枕枕面、双臂环过他后颈、双腿打开、双脚踩床面、骨盆对齐。"
+
+    def test_matching_marker_accepted(self):
+        prompt = f"{self.PLAN_MARK}\n她的头枕枕面、双臂环过他后颈、双腿打开、双脚踩床面、骨盆对齐。"
+        assert validate_pose_plan_alignment("unit E1U01", self.PLAN, prompt) is None
+
+    def test_prompt_marker_plan_silent_rejected(self):
+        """prompt 有标记而 plan 无：plan 是体位唯一决策点，先在 plan 补标记行再扩写。"""
+        prompt = f"{self.PLAN_MARK}\n她的头枕枕面……"
+        with pytest.raises(DraftViolation, match="没有姿态标记行") as exc_info:
+            validate_pose_plan_alignment("unit E1U01", "@[李明] 推门", prompt)
+        assert exc_info.value.code == "pose_plan_missing"
+
+    def test_marker_drift_rejected(self):
+        """骑乘 vs 传教士：下游改写了 plan 决策的体位（集 10 U12–U15 漂移的形态）。"""
+        drifted = "[接触 L4 · 骑乘 · 支撑：蒂法 双膝+双臂] @[李明] 位于她下方……"
+        with pytest.raises(DraftViolation, match="与脚本规划漂移") as exc_info:
+            validate_pose_plan_alignment("unit E1U01", self.PLAN, drifted)
+        assert exc_info.value.code == "pose_plan_drift"
+
+    def test_plan_marker_prompt_silent_rejected(self):
+        """plan 有标记而 prompt 漏写标记：堵「prompt 侧漏写」盲区的一半。"""
+        with pytest.raises(DraftViolation, match="缺姿态标记行") as exc_info:
+            validate_pose_plan_alignment("unit E1U01", self.PLAN, "@[李明] 推门")
+        assert exc_info.value.code == "pose_plan_missing"
+
+    def test_both_unmarked_silent(self):
+        assert validate_pose_plan_alignment("unit E1U01", "@[李明] 推门", "@[李明] 转身") is None
+
+
+class TestPlanPoseMarker:
+    """P1 plan 侧标记行良构：正文声明了接触标记就必须是完整的 L4/L5 三段式。
+
+    plan 是逐字锚层，关系词黑名单不作用于 plan（源文措辞不是判定对象）；此处只判标记行
+    本身——L4 以下单元不该写标记，写了即良构违约。无标记单元静默（向后兼容）。
+    """
+
+    def test_valid_marker_accepted(self):
+        text = "[接触 L4 · 传教士体位 · 支撑：双膝+双臂] @[李明] 位于她上方……"
+        assert validate_plan_pose_marker("unit E1U01", text) is None
+
+    def test_l3_marker_rejected(self):
+        """L4 以下单元不该写标记：L3 不满足 ``L[45]``。"""
+        with pytest.raises(DraftViolation, match="plan 标记行不完整") as exc_info:
+            validate_plan_pose_marker("unit E1U01", "[接触 L3 · 吻 · 支撑：无] 正文……")
+        assert exc_info.value.code == "plan_pose_marker_malformed"
+
+    def test_missing_support_segment_rejected(self):
+        with pytest.raises(DraftViolation, match="plan 标记行不完整") as exc_info:
+            validate_plan_pose_marker("unit E1U01", "[接触 L4 · 传教士体位] 正文……")
+        assert exc_info.value.code == "plan_pose_marker_malformed"
+
+    def test_missing_pose_segment_rejected(self):
+        with pytest.raises(DraftViolation, match="plan 标记行不完整") as exc_info:
+            validate_plan_pose_marker("unit E1U01", "[接触 L4 · 支撑：双膝] 正文……")
+        assert exc_info.value.code == "plan_pose_marker_malformed"
+
+    def test_unmarked_unit_silent(self):
+        assert validate_plan_pose_marker("unit E1U01", "镜头1：@[李明] 推门") is None
+
+
+class TestRelationalWordCheckFlag:
+    """``relational_word_check`` flag：plan 侧逐字锚层传 False，源文措辞不得被判关系词违约。
+
+    关系词黑名单只作用于 prompt_authoring 的自由扩写层；plan 正文 = 源文逐字副本 + 标记行，
+    加标记不得让源文措辞被判违约。
+    """
+
+    MARKED_RELATIONAL = (
+        "[接触 L4 · 传教士体位 · 支撑：双膝+双臂] @[李明] 位于她上方，两人身体交叠在床面。\n"
+        "她的头枕枕面、双臂环过他后颈、双腿打开、双脚踩床面、骨盆对齐；双腿完整、双脚踩在床面全程保持在画面内。"
+    )
+
+    def test_plan_layer_skips_relational_check(self):
+        """plan 侧（relational_word_check=False）：源文措辞含关系词不判违约。"""
+        validate_unit_text(
+            "unit E1U01", self.MARKED_RELATIONAL, PROJECT, max_refs=None, relational_word_check=False
+        )
+
+    def test_prompt_layer_enforces_relational_check(self):
+        """prompt 侧（默认 True）：L4+ 单元正文命中黑名单词判违约。"""
+        with pytest.raises(DraftViolation, match="关系词黑名单") as exc_info:
+            validate_unit_text("unit E1U01", self.MARKED_RELATIONAL, PROJECT, max_refs=None)
+        assert exc_info.value.code == "relational_word_found"
 
 
 class TestNeutralLayerReexport:

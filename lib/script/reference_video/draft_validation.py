@@ -40,6 +40,8 @@ from lib.script.reference_video.text_parser import (
     find_malformed_mention,
     leading_mention_before_colon,
     line_speech_marks,
+    mention_names,
+    pending_derivative_references,
     speech_line_description,
     speech_speaker_references,
     split_speech_line,
@@ -209,6 +211,7 @@ def validate_unit_text(
     unit_id: str | None = None,
     max_refs: int | None,
     tolerated_speakers: Collection[str] = (),
+    relational_word_check: bool = True,
 ) -> list[ReferenceResource]:
     """校验一个 unit 的正文并机械派生参考图引用。
 
@@ -218,6 +221,10 @@ def validate_unit_text(
 
     ``tolerated_speakers`` 里的说话人不要求已登记：正式正文里确认过的说话人可以是未登记的
     群演，执行时该行不绑声音、按原文发送。
+
+    ``relational_word_check=False`` 给逐字锚层用：script_plan 的正文 = 源文逐字副本 + 姿态
+    标记行，源文措辞不是判定对象，加标记不得让源文措辞被判违约——关系词黑名单只作用于
+    prompt_authoring 的自由扩写层。
     """
     if not text.strip():
         raise DraftViolation(f"{label} 的正文为空", code="empty_text", label=label)
@@ -245,6 +252,20 @@ def validate_unit_text(
             label=label,
         )
 
+    # 裸提及 ``@本体/衍生``：解析器在斜线处停笔，衍生段静默回落到本体——未登记的衍生
+    # （如男性专属衍生挂到女性角色）就这样漏过 missing。按完整引用名判登记。
+    character_references = catalog.reference_names("character")
+    bad_derivatives = sorted(
+        {ref for ref in pending_derivative_references(text) if ref not in character_references}
+    )
+    if bad_derivatives:
+        raise DraftViolation(
+            f"{label} 引用了未登记的衍生: {bad_derivatives}；"
+            "衍生须先登记在该角色下，或改写成本体名 `@[角色]`",
+            code="unregistered_reference_derivative",
+            label=label,
+        )
+
     # 说话人位问的不是「能不能引用」而是「是不是一条角色资产」：它决定该句台词绑哪段参考音频。
     tolerated = {asset_name_comparison_key(name) for name in tolerated_speakers}
     registered_speakers = catalog.asset_names("character")
@@ -258,7 +279,6 @@ def validate_unit_text(
 
     # 本体已登记，说话人位仍不在引用名里，只可能是那个角色没有这个衍生。分成两条违约：一条
     # 该去登记角色，一条该去登记衍生或改名，合成一句会指错修复方向。
-    character_references = catalog.reference_names("character")
     bad_forms = sorted(
         {name for name in speech_speaker_references(text) if name not in character_references and name not in tolerated}
     )
@@ -280,7 +300,8 @@ def validate_unit_text(
     admission = admit_script_unit("video_units", {"unit_id": canonical_unit_id, "text": text})
     if not admission.allowed:
         raise DraftViolations([_speech_problem_violation(problem) for problem in admission.problems])
-    _validate_relational_words(label, text)
+    if relational_word_check:
+        _validate_relational_words(label, text)
     return refs
 
 
@@ -413,6 +434,23 @@ def contact_pose_marker(text: str) -> str | None:
     return None
 
 
+#: 标记 token：括号整段 `[接触 L4/L5 · 体位 · 支撑：…]`（不含行内后续骨架句）。
+_POSE_MARK_TOKEN_RE = re.compile(r"\[接触[^]]*\]")
+
+
+def pose_mark_token(text: str) -> str | None:
+    """取正文里的姿态标记 token（首个 `[接触 …]` 括号段）；无标记返回 None。
+
+    ``contact_pose_marker`` 返回整行（姿态锁要比骨架句），这里只取括号段——plan 侧标记行
+    只有 token、prompt 侧标记行是 token + 骨架句，逐字对齐要比的是 token，不是整行。
+    """
+    for line in text.splitlines():
+        match = _POSE_MARK_TOKEN_RE.search(line)
+        if match:
+            return match.group(0)
+    return None
+
+
 def _validate_relational_words(label: str, text: str) -> None:
     """L4+ 单元正文关系词黑名单判：命中任一词即违约（词表见数据文件）。"""
     if contact_pose_marker(text) is None:
@@ -477,6 +515,85 @@ def validate_pose_lock(label: str, text: str, previous_skeleton: str | None) -> 
         )
 
 
+def validate_mention_closure(
+    label: str, plan_text: str, prompt_text: str, project: dict[str, Any]
+) -> None:
+    """提及集合闭环：prompt 正文的每个 ``@`` 提及须来自 plan 对应单元或角色表。
+
+    plan 是离源文最近的已审层：只出现在 prompt 里的新角色是幽灵名字类语义漂移
+    （「瑟琳」事件——上游各层 0 处、prompt 层凭空出现）。已登记名字恒允许：同一角色
+    可换衍生写法；未登记名字已由 ``unregistered_asset`` / ``unregistered_reference_derivative``
+    拦下，本检查只判「plan 外」这一维度。
+    """
+    catalog = build_reference_catalog(project)
+    allowed = set(mention_names(plan_text)) | set(catalog.reference_names("character"))
+    bad = sorted(set(mention_names(prompt_text)) - allowed)
+    if bad:
+        raise DraftViolation(
+            f"{label} 引入了脚本规划中没有的角色: {bad}；正文角色引用须来自 plan 对应单元或已登记资产，不得新增角色",
+            code="unplanned_character",
+            label=label,
+        )
+
+
+def validate_pose_plan_alignment(label: str, plan_text: str, prompt_text: str) -> None:
+    """体位契约逐字化：prompt 的 L4+ 标记行须与 plan 对应单元标记行逐字一致。
+
+    plan 是体位的唯一决策点（对着源文判），prompt 只继承不改写——把「谁在上」这类
+    语义判断从下游的自由扩写层移到逐字可比字段上。双向对称：prompt 有标记而 plan 无
+    → ``pose_plan_missing``；两侧标记不一致 → ``pose_plan_drift``；plan 有标记而 prompt
+    无 → 同 ``pose_plan_missing``（堵「prompt 侧漏写标记」盲区的一半）。两侧都无标记静默
+    （向后兼容）。
+    """
+    plan_marker = pose_mark_token(plan_text)
+    prompt_marker = pose_mark_token(prompt_text)
+    if prompt_marker is not None:
+        if plan_marker is None:
+            raise DraftViolation(
+                f"{label} 是 L4+ 单元，但对应脚本规划单元没有姿态标记行；"
+                "plan 是体位唯一决策点，先在 plan 补标记行再扩写",
+                code="pose_plan_missing",
+                label=label,
+            )
+        if _normalize_for_anchor(prompt_marker) != _normalize_for_anchor(plan_marker):
+            raise DraftViolation(
+                f"{label} 的姿态标记行与脚本规划漂移（plan：{plan_marker[:40]!r} / 本：{prompt_marker[:40]!r}）；"
+                "标记行须逐字继承 plan，禁止改写体位",
+                code="pose_plan_drift",
+                label=label,
+            )
+        return
+    if plan_marker is not None:
+        raise DraftViolation(
+            f"{label} 对应脚本规划的 L4+ 单元，但正文缺姿态标记行；逐字继承 plan 的标记行",
+            code="pose_plan_missing",
+            label=label,
+        )
+
+
+#: plan 侧标记行良构：`[接触 L4/L5 · 体位名 · 支撑：支撑点]`，三段齐备才算声明过。
+_PLAN_POSE_MARK_RE = re.compile(r"^\[接触\s*L[45]\s*[·・.．]\s*\S+\s*[·・.．]\s*支撑：.+\]$")
+
+
+def validate_plan_pose_marker(label: str, text: str) -> None:
+    """plan 侧标记行良构：正文声明了接触标记就必须是完整的 L4/L5 三段式。
+
+    plan 是逐字锚层（正文 = 源文逐字副本 + 标记行），关系词黑名单不作用于 plan
+    （源文措辞不是判定对象）；此处只判标记行本身——L4 以下单元不该写标记，写了即
+    良构违约。无标记单元静默（向后兼容）。
+    """
+    token = pose_mark_token(text)
+    if token is None:
+        return
+    if not _PLAN_POSE_MARK_RE.match(token):
+        raise DraftViolation(
+            f"{label} 的 plan 标记行不完整: {token!r}；"
+            "格式须为 `[接触 L4/L5 · 体位名 · 支撑：支撑点]`，L4 以下单元不写标记",
+            code="plan_pose_marker_malformed",
+            label=label,
+        )
+
+
 __all__ = [
     "SPEECH_OVERFLOW_TOLERANCE",
     "DraftViolation",
@@ -487,9 +604,13 @@ __all__ = [
     "dialogue_speakers",
     "is_verbatim_source_anchor",
     "normative_lines",
+    "pose_mark_token",
     "render_violation_report",
     "validate_dialogue_load",
+    "validate_mention_closure",
+    "validate_plan_pose_marker",
     "validate_pose_lock",
+    "validate_pose_plan_alignment",
     "validate_pose_spec",
     "validate_source_text_anchor",
     "validate_unit_text",

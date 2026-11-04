@@ -315,6 +315,33 @@ def mention_names(text: str) -> list[str]:
     return result
 
 
+def pending_derivative_references(text: str) -> list[str]:
+    """裸提及后紧跟 ``/`` 时构成的完整引用名（首现顺序、去重）。
+
+    裸 mention 的解析器在 ``/`` 处停笔（legacy 字符集不含斜线）：``@本体/衍生`` 只以
+    ``本体`` 进参考图，衍生部分被静默丢弃——未登记的衍生（如男性专属衍生挂到女性角色）
+    由此静默回落到本体、不报 missing。包裹形式 ``@[本体/衍生]`` 由 ``_iter_mentions`` 完整
+    解析，未登记时目录侧已判 missing；本函数只补裸形态的完整引用名，供校验器判衍生是否
+    登记（见 ``docs/adr/0072`` 的引用命名空间：``本体/衍生`` 是可引用名）。
+    """
+    seen: set[str] = set()
+    result: list[str] = []
+    for line in text.splitlines():
+        for _start, end, name in _iter_mentions(line):
+            if line[end : end + 1] != "/":
+                continue
+            j = end + 1
+            while j < len(line) and (_is_legacy_mention_char(line[j]) or line[j] == "-"):
+                j += 1
+            if j == end + 1:
+                continue  # 悬空斜杠，没有衍生段；交给其他判定
+            full = asset_name_comparison_key(name + line[end:j])
+            if full not in seen:
+                seen.add(full)
+                result.append(full)
+    return result
+
+
 def speech_speaker_references(text: str) -> list[str]:
     """台词记号的说话人位写下的引用名（保持首现顺序、去重），可能是 ``本体名/衍生名``。
 

@@ -108,7 +108,10 @@ from lib.script.reference_video.draft_validation import (
     contact_pose_marker,
     dialogue_speakers,
     validate_dialogue_load,
+    validate_mention_closure,
+    validate_plan_pose_marker,
     validate_pose_lock,
+    validate_pose_plan_alignment,
     validate_pose_spec,
     validate_unit_text,
     violation_items,
@@ -1494,6 +1497,9 @@ class ScriptGenerator:
         source_language = self.project_json.get("source_language")
         speech_rate_override = project_speech_rate_override(self.project_json)
         hint = "这段正文来自正式脚本，提示词编写会逐字保留其中的台词，请先在时间线上修正该单元的正文或时长"
+        # plan 侧姿态契约链状态：plan 正文 = 源文逐字副本 + 标记行，标记行是体位唯一决策点；
+        # 链锁与良构在 plan 层先判，prompt 侧只判继承（validate_pose_plan_alignment）。
+        prev_skeleton: str | None = None
         for unit in units:
             label = f"正式脚本 的 unit {unit['unit_id']}"
             text = str(unit.get("text") or "")
@@ -1505,10 +1511,14 @@ class ScriptGenerator:
                     unit_id=str(unit["unit_id"]),
                     max_refs=max_refs,
                     tolerated_speakers=dialogue_speakers(text),
+                    relational_word_check=False,
                 )
                 validate_dialogue_load(
                     label, text, int(unit["duration_seconds"]), source_language, speech_rate_override
                 )
+                validate_plan_pose_marker(label, text)
+                validate_pose_lock(label, text, prev_skeleton)
+                prev_skeleton = contact_pose_marker(text)
             except DraftViolation as exc:
                 enriched = [
                     DraftViolation(
@@ -1685,6 +1695,8 @@ class ScriptGenerator:
                     tolerated_speakers=dialogue_speakers(str(unit.get("text") or "")),
                 )
                 assert_dialogue_preserved(label, str(unit.get("text") or ""), flat_unit.text)
+                validate_mention_closure(label, str(unit.get("text") or ""), flat_unit.text, self.project_json)
+                validate_pose_plan_alignment(label, str(unit.get("text") or ""), flat_unit.text)
                 validate_pose_spec(label, flat_unit.text)
                 validate_pose_lock(label, flat_unit.text, prev_skeleton)
             except DraftViolation as exc:
