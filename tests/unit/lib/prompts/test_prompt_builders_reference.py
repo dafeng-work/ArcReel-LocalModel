@@ -80,10 +80,10 @@ def test_build_reference_video_prompt_emphasizes_no_appearance_description():
     assert "外貌" in _prompt_authoring_prompt()
 
 
-def test_build_reference_video_prompt_structures_shot_text_by_four_elements():
-    """镜头描述指导按景别 / 构图 / 运镜 / 画面内容四要素组织（对抗生成过短的镜头描述）。"""
+def test_build_reference_video_prompt_structures_shot_text_by_five_sections():
+    """正文描述指导按五段式「拍摄计划」框架（主体 / 动作 / 运镜 / 光 / 声）组织（对抗生成过短的镜头描述）。"""
     prompt = _prompt_authoring_prompt()
-    for element in ("景别", "构图", "运镜", "画面内容"):
+    for element in ("主体", "动作", "运镜", "光", "声"):
         assert element in prompt
 
 

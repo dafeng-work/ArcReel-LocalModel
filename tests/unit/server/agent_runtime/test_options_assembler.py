@@ -10,6 +10,9 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import socket
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -50,6 +53,15 @@ def _async_value(value: str):
         return value
 
     return _provider
+
+
+@contextmanager
+def _listening_port() -> Generator[tuple[str, int]]:
+    """借一个真在监听的本地端口，供出站代理的真实探测通过。"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        sock.listen(1)
+        yield sock.getsockname()
 
 
 def _make_assembler(
@@ -325,20 +337,83 @@ async def test_json_post_validation_hook_keeps_event_loop_running(
 
 
 @pytest.mark.asyncio
-async def test_build_settings_redirects_auto_memory_to_project_memory_dir(tmp_path: Path) -> None:
+async def test_build_settings_redirects_auto_memory_to_project_memory_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """settings JSON 把原生 auto memory 重定向到项目记忆目录；sandbox 仍是独立字段，
     由 SDK 在拼命令行时并进同一份 JSON。"""
 
     async def fake_loader():
         return {}
 
+    monkeypatch.delenv("ARCREEL_SKIP_WEB_FETCH_PREFLIGHT", raising=False)
     options = await _make_assembler(tmp_path, provider_env_loader=fake_loader).build("demo")
 
     project_cwd = (tmp_path / "projects").resolve() / "demo"
-    assert json.loads(options.settings) == {"autoMemoryDirectory": str(project_memory_dir(project_cwd))}
+    assert json.loads(options.settings) == {
+        "autoMemoryDirectory": str(project_memory_dir(project_cwd)),
+        "skipWebFetchPreflight": True,
+    }
     # 显式设 autoMemoryEnabled 会覆盖原生默认，装配不碰它
     assert "autoMemoryEnabled" not in options.settings
     assert options.sandbox.get("enabled") is True
+
+
+@pytest.mark.asyncio
+async def test_build_settings_keeps_web_fetch_preflight_when_env_disables_skip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """env 关掉跳过预检时，settings JSON 不带该键——CLI 默认就跑预检。"""
+
+    async def fake_loader():
+        return {}
+
+    monkeypatch.setenv("ARCREEL_SKIP_WEB_FETCH_PREFLIGHT", "0")
+    options = await _make_assembler(tmp_path, provider_env_loader=fake_loader).build("demo")
+
+    assert "skipWebFetchPreflight" not in json.loads(options.settings)
+
+
+@pytest.mark.asyncio
+async def test_build_injects_reachable_proxy_into_cli_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """代理端点可达时，代理 env 注入 CLI 子进程：沙箱 mux 的上游与 CLI 自身的 WebFetch
+    都走这个代理。"""
+
+    async def fake_loader():
+        return {}
+
+    monkeypatch.delenv("HTTPS_PROXY", raising=False)
+    monkeypatch.delenv("https_proxy", raising=False)
+    monkeypatch.delenv("HTTP_PROXY", raising=False)
+    monkeypatch.delenv("http_proxy", raising=False)
+    monkeypatch.delenv("ALL_PROXY", raising=False)
+    monkeypatch.delenv("all_proxy", raising=False)
+    with _listening_port() as endpoint:
+        proxy_url = f"http://127.0.0.1:{endpoint[1]}"
+        monkeypatch.setenv("ARCREEL_AGENT_PROXY_URL", proxy_url)
+        options = await _make_assembler(tmp_path, provider_env_loader=fake_loader).build("demo")
+
+    assert options.env is not None
+    assert options.env["HTTPS_PROXY"] == proxy_url
+    assert options.env["https_proxy"] == proxy_url
+    assert "127.0.0.1" in options.env["no_proxy"].split(",")
+
+
+@pytest.mark.asyncio
+async def test_build_falls_back_to_direct_when_proxy_endpoint_unreachable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """代理端点不可达时把代理变量置空，CLI 侧按无代理处理，回退直连。"""
+
+    async def fake_loader():
+        return {}
+
+    monkeypatch.setenv("ARCREEL_AGENT_PROXY_URL", "http://127.0.0.1:1")
+    options = await _make_assembler(tmp_path, provider_env_loader=fake_loader).build("demo")
+
+    assert options.env is not None
+    assert options.env["HTTPS_PROXY"] == ""
+    assert options.env["HTTP_PROXY"] == ""
 
 
 @pytest.mark.asyncio

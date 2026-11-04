@@ -59,7 +59,9 @@ segments 表每个分镜已定稿（segment_id、逐字原文、时长、出场�
 
 # 字段写作指引
 
-为每个分镜产出下列视觉字段。
+为每个分镜产出下列视觉字段；字段组整体按五段式「拍摄计划」框架组织：
+
+{{ partial("shared/shot_plan_writing_guide") }}
 
 {{ partial("shared/image_prompt_writing_guide") }}
 

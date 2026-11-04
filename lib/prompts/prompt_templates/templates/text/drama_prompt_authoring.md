@@ -59,13 +59,16 @@ protected: false
 
 # 字段写作指引
 
-对每个分镜，按下列章节填写视觉字段。
+对每个分镜，按下列章节填写视觉字段；字段组整体按五段式「拍摄计划」框架组织：
+
+{{ partial("shared/shot_plan_writing_guide") }}
 
 {{ partial("shared/image_prompt_writing_guide") }}
 
 ## 视频提示词（video_prompt）——切换到「动作设计师」视角
 
 - **video_prompt.action**：{{ partial("shared/action_writing_guide") }}
+- **运镜**（video_prompt.camera_motion）：按画面内容从枚举选择，不强加倾向。
 - **video_prompt.ambiance_audio**：{{ partial("shared/ambiance_audio_writing_guide") }}
 
 # 创作目标

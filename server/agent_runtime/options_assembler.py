@@ -35,6 +35,8 @@ from lib.infra.data_root_layout import DataRootLayout
 from lib.prompts.prompt_templates.builtin import builtin_templates
 from server.agent_runtime.agent_access_policy import AgentAccessPolicy
 from server.agent_runtime.arcreel_mcp import build_arcreel_mcp_server
+from server.agent_runtime.outbound_proxy import resolve_proxy_env_overrides
+from server.agent_runtime.web_fetch_policy import web_fetch_preflight_settings
 from server.auth import create_token, is_auth_enabled
 
 logger = logging.getLogger(__name__)
@@ -438,6 +440,9 @@ class OptionsAssembler:
                 ),
             }
         )
+        # 出站代理：CLI 进程的代理 env 是沙箱 mux 代理的上游，也是 CLI 自身 WebFetch 的
+        # 代理。放在最后覆盖，免得上面的注入把代理变量又改回去。
+        provider_env.update(await resolve_proxy_env_overrides())
         sandbox_typed = policy.build_sandbox_settings(project_cwd, user_id=self._user_id_provider())
 
         # Windows 回退：sandbox 关闭时 Bash 系列被剥离出 allowed_tools，
@@ -453,16 +458,22 @@ class OptionsAssembler:
             user_id=self._user_id_provider(),
         )
 
-        return ClaudeAgentOptions(
-            cwd=str(project_cwd),
-            setting_sources=self._setting_sources,
+        # settings 落 flag settings 层，优先级高于项目 .claude/settings.json；SDK 随后把
+        # ``sandbox`` 并进同一份 JSON。
+        settings_payload: dict[str, Any] = {
             # 项目记忆：把原生 auto memory 的目录从「按 git 仓库根派生」重定向到项目目录内，
             # 否则同一台机器上所有 ArcReel 项目与开发者的交互会话共用一份 MEMORY.md。
             # 走 JSON 串而非物化 settings 文件：路径按会话变化，落盘会与 profile manifest 的
-            # 「未改内置文件」判定打架（ADR 0074）。settings 落 flag settings 层，优先级高于
-            # 项目 .claude/settings.json；SDK 随后把 ``sandbox`` 并进同一份 JSON。
+            # 「未改内置文件」判定打架（ADR 0074）。
+            "autoMemoryDirectory": str(project_memory_dir(project_cwd)),
+            **web_fetch_preflight_settings(),
+        }
+
+        return ClaudeAgentOptions(
+            cwd=str(project_cwd),
+            setting_sources=self._setting_sources,
             # 不显式设 autoMemoryEnabled：原生默认即开启。
-            settings=json.dumps({"autoMemoryDirectory": str(project_memory_dir(project_cwd))}),
+            settings=json.dumps(settings_payload),
             allowed_tools=allowed_tools,
             max_turns=self._max_turns_provider(),
             system_prompt=SystemPromptPreset(

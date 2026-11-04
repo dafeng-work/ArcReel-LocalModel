@@ -176,6 +176,9 @@ ArcReel 在应用启动时运行 Alembic 迁移，将数据库结构升级到当
 | `ARCREEL_DATA_DIR` | `projects` | 数据根；项目、默认 SQLite 数据库、日志和 Vertex 凭据都在其下 |
 | `CORS_ORIGINS` | 通配 | 设为白名单时，浏览器型 MCP 客户端的 Origin 也须列入 |
 | `ARCREEL_OFFICIAL_SERVICE_URL` | 内置官方服务地址 | 市场安装量、评分与分享提交所用的官方服务；设为空即整体关闭，市场回到只读取市场源的形态 |
+| `ARCREEL_AGENT_PROXY_URL` | 无 | 内嵌 Agent 的出站代理地址（如 `http://127.0.0.1:7897`）；未设置时按 `HTTPS_PROXY` → `HTTP_PROXY` → `ALL_PROXY` 顺序取 |
+| `ARCREEL_AGENT_NO_PROXY` | 无 | 追加到 `no_proxy` 的条目，逗号分隔；本地地址默认绕过代理 |
+| `ARCREEL_SKIP_WEB_FETCH_PREFLIGHT` | `true` | 设为 `false` 时恢复 WebFetch 的域名安全预检（该预检要求 `api.anthropic.com` 可达） |
 
 注意：
 
@@ -185,6 +188,8 @@ ArcReel 在应用启动时运行 Alembic 迁移，将数据库结构升级到当
 - Vertex 凭据文件应只授予运行 ArcReel 的用户读取权限。
 - 文件日志固定写入数据根下的 `logs/`。旧变量 `ARCREEL_LOG_DIR` 已不再生效，仍设置时启动日志会提示一次；只需要 stdout 日志时设置 `ARCREEL_LOG_FILE_DISABLED=true`。
 - 第三方模型 API Key 通常在 ArcReel 设置页中管理，不要写入公开文档。
+- 出站代理只在代理端点 TCP 可达时生效；不可达时内嵌 Agent 回退直连，取不到被墙域名。容器部署时宿主代理不在容器的 loopback 上，代理地址要写成容器可达的宿主地址，并确认宿主代理监听该地址可达的网卡。
+- 代理地址里的账号口令会随环境变量进入 Agent 沙箱内的 Bash 进程，不要把代理口令写进 `ARCREEL_AGENT_PROXY_URL`。
 
 远程 MCP 端点为 `/mcp`，始终要求 `arc-` 前缀 API Key；即使 `AUTH_ENABLED=false` 也不会匿名放行。外部接入不需要额外的 `MCP_*` 配置：把设置页「外部 Agent 接入」给出的端点地址，与在「访问令牌」创建的 API Key 填进客户端即可，通过保留 SSE 长连接的 HTTPS 反向代理、VPN 或安全隧道访问。
 
