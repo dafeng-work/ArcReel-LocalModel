@@ -115,11 +115,16 @@ _COMFYUI_ENVS: Final[frozenset[str]] = frozenset(
         # 2026-10-17 新增：MiniMax-H3 四档，ComfyUI 实例在 8194-8197。
         # 2026-10-24 追加 video-h3-ref-nsfw（Ref2VA + 去审查编码器，实例在 8198），
         # H3 家族至此五档、实例占 8194-8198。
-        # 与 bin/arcreel-env-gate.sh 的 probe_for_env 同步（那边已先行加入）。
+        # 2026-11-05 追加 video-h3-ref-nsfw-community：把原 video-h3-ref-nsfw 拆成两档——
+        # 原档完整还原 2026-10-27 经典配置（旧去审查编码器 + mmproj，:8198），
+        # 新档走 abliterated 内联视觉塔编码器 + HMNSFW-AIO-V2.5 DiT LoRA（:8203），
+        # H3 家族至此六档、实例占 8194-8198 + 8203。
+        # 与 bin/arcreel-env-gate.sh 的 probe_for_env 同步（宿主侧已先行加入）。
         "video-h3",
         "video-h3-nsfw",
         "video-h3-ref",
         "video-h3-ref-nsfw",
+        "video-h3-ref-nsfw-community",
         "video-h3-lowvram",
         "image-qwen21",
         "qwenimage",
