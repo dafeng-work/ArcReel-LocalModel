@@ -39,7 +39,7 @@ from lib.project.asset_derivatives import derivative_artifact_key, derivative_ta
 from lib.project.asset_types import ASSET_SPECS, asset_name_comparison_key
 from lib.project.data_validator import DataValidator
 from lib.project.episode_asset_references import episode_referenced_assets
-from lib.project.project_manager import ProjectManager, is_reference_video_project
+from lib.project.project_manager import ProjectManager, is_reference_family_project
 from lib.project.project_migration_failure import (
     MIGRATION_FAILURE_CODE,
     MIGRATION_FAILURE_FILENAME,
@@ -1113,7 +1113,7 @@ class WorkflowStateService:
             blockers.append(
                 WorkflowBlocker(code="invalid_content_mode", path="content_mode", reason="unsupported mode")
             )
-        if not isinstance(generation_mode, str) or generation_mode not in {"storyboard", "reference_video"}:
+        if not isinstance(generation_mode, str) or generation_mode not in {"storyboard", "reference_video", "mixed"}:
             blockers.append(
                 WorkflowBlocker(code="invalid_generation_mode", path="generation_mode", reason="unsupported route")
             )
@@ -1404,7 +1404,7 @@ class WorkflowStateService:
         script_plan_kind = script_review.script_plan_quarantine_kind(project)
         if script_plan_kind is not None:
             kinds.append(script_plan_kind)
-        if is_reference_video_project(project):
+        if is_reference_family_project(project):
             kinds.append(QUARANTINE_KIND_PROMPT_AUTHORING)
         drafts: list[WorkflowDraft] = []
         for kind in kinds:

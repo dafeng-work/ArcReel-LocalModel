@@ -3899,6 +3899,8 @@ class API {
       prompt?: string;
       duration_seconds?: number;
       note?: string | null;
+      /** 混合模式首帧资产；空串 = 清除（mixed 语义）。 */
+      first_frame_asset?: string;
     },
   ): Promise<{ unit: ReferenceVideoUnit; unit_capability: ReferenceUnitCapability }> {
     return this.request(

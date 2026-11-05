@@ -856,6 +856,9 @@ class ReferenceVideoUnit(BaseModel):
     # 待编写：视觉层尚未补出。不带视觉层的新增条目置位，提示词编写写回或手写齐视觉层时清除；
     # 对 LLM 隐藏，不在任何 PATCH 白名单内。落盘只在置位时出现。
     pending_authoring: SkipJsonSchema[bool] = Field(default=False, description="该条目待编写")
+    # 混合模式：该单元附的首帧图（项目内相对路径）。声明则定 i2v 桶，清除回 r2v 桶；
+    # 仅 mixed 项目有意义，非 mixed 由 API 闸拒绝。对 LLM 隐藏，不在提示词白名单内。
+    first_frame_asset: SkipJsonSchema[str | None] = Field(default=None, description="单元附的首帧图资源（混合模式）")
 
     @model_validator(mode="after")
     def _validate_replan_shell(self) -> "ReferenceVideoUnit":

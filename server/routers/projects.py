@@ -69,7 +69,12 @@ from lib.infra.json_io import domain_error_on_value_error
 from lib.project.asset_fingerprints import compute_asset_fingerprints
 from lib.project.asset_types import asset_name_comparison_key
 from lib.project.project_change_hints import project_change_source
-from lib.project.project_manager import EmptySourceError, EpisodeScriptReboundError, get_project_manager
+from lib.project.project_manager import (
+    EmptySourceError,
+    EpisodeScriptReboundError,
+    get_project_manager,
+    validate_generation_mode_transition,
+)
 from lib.prompts.style_templates import is_known_template, resolve_template_prompt
 from lib.script.blank_script import BlankScriptError, start_blank_script
 from lib.script.script_batch_edit import ScriptBatchEditCommand, ScriptBatchEditor, blank_item_after, script_revision
@@ -279,9 +284,9 @@ class CreateProjectRequest(BaseModel):
     target_duration: int | None = Field(default=None, gt=0)
     # 仅 content_mode=ad：创作诉求短文本（可空，不走 source_loader）
     brief: str | None = None
-    # 生成模式：创建时必须显式选择 storyboard 或 reference_video；缺失或旧 grid 值由
-    # Pydantic 校验返回 422。创建后不可更改（PATCH 模型结构上无此字段）。
-    generation_mode: Literal["storyboard", "reference_video"]
+    # 生成模式：创建时必须显式选择 storyboard / reference_video / mixed；缺失或旧 grid 值由
+    # Pydantic 校验返回 422。storyboard / reference_video 可经 PATCH 单向转入 mixed（不可逆）。
+    generation_mode: Literal["storyboard", "reference_video", "mixed"]
     # 宫格分镜开关：只改变分镜图的生产方式，不是独立生成模式；仅 storyboard 生成模式有意义，
     # 创建后可经项目 PATCH 随时切换。ad 项目拒绝开启。
     grid_storyboard: bool = False
@@ -331,7 +336,9 @@ class UpdateProjectRequest(BaseModel):
     target_duration: int | None = Field(default=None, gt=0)
     # 仅 ad 项目：创作诉求短文本；显式 null 清为空字符串
     brief: str | None = None
-    # 生成模式创建即定、不可变，PATCH 结构上无 generation_mode 字段；宫格开关随时可切
+    # 生成模式单向转换：storyboard / reference_video → mixed 放行，其余变更（含 mixed 转出、
+    # 两原模式互换、显式 null）400 拒绝；同值幂等。宫格开关随时可切
+    generation_mode: Literal["storyboard", "reference_video", "mixed"] | None = None
     grid_storyboard: bool | None = None
     video_backend: str | None = None
     video_provider_i2v: str | None = None
@@ -1129,6 +1136,21 @@ async def update_project(name: str, req: UpdateProjectRequest, _t: Translator):
                         project[SPEECH_RATE_FIELD] = _validated_speech_rate(req.speech_rate_units_per_second, _t)
                 if "aspect_ratio" in req.model_fields_set and req.aspect_ratio is not None:
                     project["aspect_ratio"] = req.aspect_ratio
+                if "generation_mode" in req.model_fields_set:
+                    # 单向转换闸：storyboard / reference_video → mixed 放行，mixed 转出与
+                    # 两原模式互换均 400；同值幂等。显式 null 无清除语义，同 400。
+                    if req.generation_mode is None:
+                        raise BadRequestError("generation_mode_cannot_clear").with_diagnostic("generation_mode_cannot_clear")
+                    try:
+                        validate_generation_mode_transition(project.get("generation_mode"), req.generation_mode)
+                    except ValueError:
+                        raise BadRequestError("generation_mode_transition_not_allowed").with_diagnostic(
+                            "generation_mode_transition_not_allowed"
+                        ) from None
+                    project["generation_mode"] = req.generation_mode
+                    if req.generation_mode == "mixed":
+                        # 宫格开关仅 storyboard 有意义：转入 mixed 时清除，避免残留 true
+                        project["grid_storyboard"] = False
                 if "grid_storyboard" in req.model_fields_set:
                     if is_ad and req.grid_storyboard:
                         raise HTTPException(status_code=400, detail=_t("ad_grid_not_supported"))

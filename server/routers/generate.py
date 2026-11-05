@@ -31,7 +31,7 @@ from lib.infra.path_safety import safe_exists, safe_join
 from lib.project.asset_derivatives import DERIVATIVE_TASK_TYPE, DerivativeSheetSource, resolve_derivative_sheet_source
 from lib.project.asset_types import ASSET_SPECS, resolve_asset_key, validate_asset_name
 from lib.project.project_change_hints import build_change_label, emit_project_change_batch, project_change_source
-from lib.project.project_manager import get_project_manager, is_reference_video_project
+from lib.project.project_manager import get_project_manager, is_reference_family_project
 from lib.script.script_editor import resolve_items
 from lib.script.script_models import get_generated_assets
 from lib.script.script_skeleton import resolve_script_kind
@@ -204,7 +204,7 @@ async def generate_video(
         # 生成模式检查前置于分镜图存在性检查：参考生视频项目本无分镜图步骤，否则会拿到
         # 「请先生成分镜图」的误导指引。磁盘中即使存在不适用于当前模式的分镜图也不参与判定；
         # 生成模式以 project.json 为唯一真相源，确保请求执行与费用估算使用同一轴。
-        if is_reference_video_project(project):
+        if is_reference_family_project(project):
             raise ConflictError("video_route_is_reference_video")
 
         # 与 worker 一致：分镜图只认 generated_assets.storyboard_image 的显式绑定，

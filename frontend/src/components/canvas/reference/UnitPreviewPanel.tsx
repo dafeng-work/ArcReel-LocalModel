@@ -13,10 +13,13 @@ import type { CostBreakdown, ReferenceVideoUnit, UnitStatus } from "@/types";
 import { itemIdWithinEpisode } from "@/utils/episode-display";
 import { previewAspect } from "@/utils/preview-aspect";
 import { Button } from "@/components/ui/button";
+import { UnitFirstFramePicker } from "./UnitFirstFramePicker";
 
 export interface UnitPreviewPanelProps {
   unit: ReferenceVideoUnit | null;
   projectName?: string;
+  /** 混合模式首帧附挂走 PATCH unit 端点，需要 episode 定位单元。 */
+  episode?: number;
   /** Composite UI status — combines persisted state, queue, and optimistic flags.
    *  When omitted, falls back to `video_clip ? 'ready' : 'pending'`. */
   status?: UnitStatus;
@@ -73,6 +76,7 @@ function hasCost(b: CostBreakdown | undefined): boolean {
 export function UnitPreviewPanel({
   unit,
   projectName,
+  episode,
   status,
   errorMessage,
   busy = false,
@@ -166,6 +170,17 @@ export function UnitPreviewPanel({
         )}
         <StatusBadge status={effectiveStatus} />
       </div>
+
+      {/* 混合模式首帧附挂：附挂与否决定该单元走首帧（i2v）还是参考（r2v）路线，
+          非 mixed 项目组件内部自行隐藏。 */}
+      {projectName && episode != null && (
+        <UnitFirstFramePicker
+          unit={unit}
+          projectName={projectName}
+          episode={episode}
+          disabled={inFlight || busy || restoring || saving}
+        />
+      )}
 
       {/* 画框按项目画幅：竖屏 9:16、高度取 55dvh 与栏宽换算值中较小的一个；横屏 16:9、高度同样不超过 55dvh。
           画框不随栏高收缩，栏放不下时整栏滚动。 */}

@@ -586,6 +586,20 @@ async def admit_reference_video_batch(
     rather than being reported next to a batch that went ahead without them.
     """
 
+    # 混合模式只支持逐单元生成：定桶依赖单元首帧声明，批量无法给出一致的逐单元结论，
+    # 整批在 admission 层结构化拒绝，任何任务都不创建。
+    if project.get("generation_mode") == "mixed":
+        tickets = [
+            refused_ticket(
+                str(unit.get("unit_id") or f"video_units[{index}]"),
+                code=GenerationProblemCode.MIXED_MODE_BATCH_NOT_SUPPORTED,
+                detail="混合模式不支持批量排队，请逐个单元生成",
+                action=GenerationAction.FIX_INPUT,
+            )
+            for index, unit in enumerate(units)
+        ]
+        return BatchAdmission(operation=operation, selection=selection, tickets=tuple(tickets))
+
     request_facts_lookup = configured_reference_request_facts(
         project, config_resolver or ConfigResolver(async_session_factory)
     )

@@ -32,7 +32,7 @@ from lib.generation.video_request_facts import (
 )
 from lib.infra.schema_guards import is_int
 from lib.project.asset_types import ASSET_SPECS
-from lib.project.project_manager import grid_storyboard_enabled, is_reference_video_project
+from lib.project.project_manager import grid_storyboard_enabled, is_reference_family_project
 from lib.script.grid.grid_resolution import resolve_image_resolution
 from lib.script.grid.layout import GRID_FALLBACK_RESOLUTION, large_grid_allowed, plan_grid_chunks
 from lib.script.reference_video.artifact_selection import CurrentReferenceAssets
@@ -286,7 +286,7 @@ class CostEstimationService:
         project_name: str,
     ) -> dict[str, Any]:
         episodes_meta = project_data.get("episodes", [])
-        is_reference_video = is_reference_video_project(project_data)
+        is_reference_video = is_reference_family_project(project_data)
 
         # Resolve current model config（共享单一 session）。估价以 T2I 为准（T2I/I2I 是正交能力槽，
         # T2I 缺失不应回落 I2I —— 那会拿错误能力的价目算费用）。

@@ -175,8 +175,8 @@ export function CreateProjectModal() {
     setBasics(next);
     if (next.generationRoute === basics.generationRoute) return;
     const globals = generationData?.globalDefaults ?? { video: "", videoI2V: "", videoR2V: "" };
-    const before = executingVideoModel(models, globals, basics.generationRoute === "reference_video");
-    const after = executingVideoModel(models, globals, next.generationRoute === "reference_video");
+    const before = executingVideoModel(models, globals, basics.generationRoute === "reference_video" || basics.generationRoute === "mixed");
+    const after = executingVideoModel(models, globals, next.generationRoute === "reference_video" || next.generationRoute === "mixed");
     const nextDurations = catalogDurations(
       generationData?.providers ?? [],
       generationData?.customProviders ?? [],
@@ -238,7 +238,7 @@ export function CreateProjectModal() {
         image: "",
         imageT2I: "",
       };
-      const executingVideo = executingVideoModel(models, globals, generationRoute === "reference_video");
+      const executingVideo = executingVideoModel(models, globals, generationRoute === "reference_video" || generationRoute === "mixed");
       const executingImage = executingImageModel(models, globals);
       const modelSettings: Record<string, { resolution: string }> = {};
       if (executingVideo && models.videoResolution) {
@@ -330,7 +330,7 @@ export function CreateProjectModal() {
           {step === 2 && (
             <WizardStepGeneration
               isAd={isAd}
-              usesReferenceImages={basics.generationRoute === "reference_video"}
+              usesReferenceImages={basics.generationRoute === "reference_video" || basics.generationRoute === "mixed"}
               duration={duration}
               onDurationChange={setDuration}
               models={models}

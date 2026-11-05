@@ -15,7 +15,7 @@ from lib.artifacts.version_manager import VersionManager
 from lib.i18n import DEFAULT_LOCALE
 from lib.i18n import _ as translate
 from lib.infra.api_errors import ApiError
-from lib.project.project_manager import ProjectManager, is_reference_video_project
+from lib.project.project_manager import ProjectManager, is_reference_family_project
 from lib.script.script_editor import ScriptEditError, resolve_items
 from server.media_tools.context import tool_error, tool_problem
 from server.services.currency.typed_media_restore import restore_typed_media_resource
@@ -38,7 +38,7 @@ class SelectVideoVersionRequest(BaseModel):
 
 def project_video_unit_ids(projects: ProjectManager, project_name: str, project: dict[str, Any]) -> set[str]:
     """项目全部剧本里的视频单元 ID：分镜图生视频为分镜 ID，参考生视频为 unit_id。"""
-    kind = "video_units" if is_reference_video_project(project) else None
+    kind = "video_units" if is_reference_family_project(project) else None
     found: set[str] = set()
     for script_name in sorted(projects.list_scripts(project_name)):
         try:
@@ -79,7 +79,7 @@ async def select_video_version(
         if unit_id not in project_video_unit_ids(services.projects, scope.project_name, project):
             return tool_problem(f"视频单元「{unit_id}」不存在", code="video_unit_not_found")
 
-        resource_type = "reference_videos" if is_reference_video_project(project) else "videos"
+        resource_type = "reference_videos" if is_reference_family_project(project) else "videos"
         versions = VersionManager(services.projects.get_project_path(scope.project_name))
         try:
             restored = await restore_typed_media_resource(

@@ -262,15 +262,17 @@ function fullProjectPatch(
     // 音色与后端 .strip() 对齐，保存时去首尾空白
     narration_voice: narration.narrationVoice.trim() || null,
     narration_speed: narration.narrationSpeed,
-    // 绑定方式只在参考生视频路线上有效，其余路线该键与项目无关，不写
-    ...(facts.generationRoute === "reference_video" ? { character_voice_binding: value.voiceBinding } : {}),
+    // 绑定方式只在参考家族路线（参考生视频/混合）上有效，其余路线该键与项目无关，不写
+    ...(facts.generationRoute === "reference_video" || facts.generationRoute === "mixed"
+      ? { character_voice_binding: value.voiceBinding }
+      : {}),
     // null 即清除项目级覆盖、回退语言默认
     speech_rate_units_per_second: value.speechRate,
     default_text_backend: models.textBackendDefault || null,
     text_backend_simple: models.textBackendSimple || null,
     text_backend_complex: models.textBackendComplex || null,
     aspect_ratio: value.aspectRatio || undefined,
-    // 生成方式创建后不可更改，不在 PATCH 面上；宫格只在开关可见时写，广告项目对 true 返回 400
+    // 生成方式不在表单 PATCH 面上（转入混合模式走独立的直接写回）；宫格只在开关可见时写，广告项目对 true 返回 400
     ...(gridToggleVisible(facts) ? { grid_storyboard: value.gridStoryboard } : {}),
     // 广告项目写目标总时长（正整数秒，不可清空），后端对 default_duration 与 episode_target_duration
     // 出现本身返回 400；非广告项目反之，两者恒写，null 即清除

@@ -124,10 +124,12 @@ logger = logging.getLogger(__name__)
 
 PROJECT_SLUG_SANITIZER = re.compile(r"[^a-zA-Z0-9]+")
 
-# 生成模式（generation_mode）：二值必填，创建即定、之后不可变（可变性由 PATCH 模型结构保证）。
+# 生成模式（generation_mode）：三值必填，创建即定；storyboard / reference_video 可单向转入
+# mixed（混合模式），mixed 为单向汇点、不可转出（docs/adr/0099）。
 # 宫格不是生成模式：它由独立的 grid_storyboard 布尔表达，仅 `storyboard` 生成模式有意义。
 # 存量三值 "grid" 已由 v4→v5 迁移重编码为 storyboard + grid_storyboard=true。
-VALID_GENERATION_MODES: frozenset[str] = frozenset({"storyboard", "reference_video"})
+VALID_GENERATION_MODES: frozenset[str] = frozenset({"storyboard", "reference_video", "mixed"})
+_REFERENCE_FAMILY_MODES: frozenset[str] = frozenset({"reference_video", "mixed"})
 _DEFAULT_GENERATION_MODE = "storyboard"
 
 
@@ -221,13 +223,37 @@ def is_episode_number(value: object) -> TypeGuard[int]:
 
 
 def is_reference_video_project(project: Mapping[str, Any]) -> bool:
-    """项目是否使用参考生视频。
+    """项目是否使用参考生视频（严格判：``generation_mode == "reference_video"``）。
 
-    project.json 的 ``generation_mode`` 是该判定的唯一真相源：模式创建即定、之后不可变，
-    整个项目按同一生成模式生成；广告/短片的剧本骨架也不携带剧本级 ``generation_mode`` 戳
-    （见 ``script_generator``），只看剧本判不出参考生视频。
+    project.json 的 ``generation_mode`` 是该判定的唯一真相源；广告/短片的剧本骨架也不携带
+    剧本级 ``generation_mode`` 戳（见 ``script_generator``），只看剧本判不出参考生视频。
+    走参考管线的判据（含混合模式）见 ``is_reference_family_project``。
     """
     return project.get("generation_mode") == "reference_video"
+
+
+def is_reference_family_project(project: Mapping[str, Any]) -> bool:
+    """项目是否走参考生视频管线：``reference_video`` 或 ``mixed``。
+
+    混合模式复用参考生视频的全部管线（video_units 骨架、参考投影与执行链），只是单元级
+    自选首帧 / 参考路线；凡「走参考管线」语义的消费方用本判据，需严格区分两种模式的
+    判据（批量闸、首帧字段生效范围）继续用 ``generation_mode`` 原值。
+    """
+    return project.get("generation_mode") in _REFERENCE_FAMILY_MODES
+
+
+def validate_generation_mode_transition(current: object, new: object) -> None:
+    """生成模式单向转换闸：``storyboard`` / ``reference_video`` → ``mixed`` 放行，其余一切变更拒绝。
+
+    ``mixed`` 是单向汇点（docs/adr/0099）：mixed 项目不可转出到任何模式，两个原模式之间
+    也不允许互换。同值幂等放行。``current`` 缺失（None）时拒绝——无现值即无从谈转换。
+    """
+    if new == current:
+        return
+    if not isinstance(new, str) or new not in VALID_GENERATION_MODES:
+        raise ValueError(f"generation_mode 值无效: {new!r}，必须是 {sorted(VALID_GENERATION_MODES)}")
+    if new != "mixed" or not isinstance(current, str) or current not in VALID_GENERATION_MODES:
+        raise ValueError(f"generation_mode 只允许从 storyboard / reference_video 单向转入 mixed: {current!r} → {new!r}")
 
 
 def _resolve_items_or_warn(script: dict, *, script_filename: str | None = None) -> list[Any]:
@@ -2525,7 +2551,7 @@ class ProjectManager:
                 raise ValueError(f"extras 不允许覆盖核心字段: {sorted(forbidden)}")
             project.update(extras)
 
-        # 生成模式与宫格开关：路由层已做必填二值校验与 ad 互斥（400/422），这里再兜一道防非路由
+        # 生成模式与宫格开关：路由层已做必填三值校验与 ad 互斥（400/422），这里再兜一道防非路由
         # 调用方；未传时按数据层默认补写显式值，保证新项目落盘即含两字段（与 schema v5 形态对齐）。
         generation_mode = project.setdefault("generation_mode", _DEFAULT_GENERATION_MODE)
         if not isinstance(generation_mode, str) or generation_mode not in VALID_GENERATION_MODES:

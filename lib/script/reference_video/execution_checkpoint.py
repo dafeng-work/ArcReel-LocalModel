@@ -593,8 +593,15 @@ class _VideoSubmissionCheckpoint:
         if any(not item.staged_locator.startswith(expected_prefix) for item in self.media):
             raise ValueError("staged_locator does not belong to this task")
         if self.kind == _CHECKPOINT_KIND:
-            if any(item.role not in ("reference_image", "reference_audio") for item in self.media):
-                raise ValueError("reference checkpoint contains storyboard media")
+            if any(
+                item.role not in ("reference_image", "reference_audio", "start_image", "end_image")
+                for item in self.media
+            ):
+                raise ValueError("reference checkpoint contains unsupported media role")
+            if sum(item.role == "start_image" for item in self.media) > 1:
+                raise ValueError("reference checkpoint contains multiple start images")
+            if sum(item.role == "end_image" for item in self.media) > 1:
+                raise ValueError("reference checkpoint contains multiple end images")
             audio = tuple(item for item in self.media if item.role == "reference_audio")
             image_count = sum(item.role == "reference_image" for item in self.media)
             if self.reference_audio_targets is None:

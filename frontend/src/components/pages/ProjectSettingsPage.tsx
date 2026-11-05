@@ -169,7 +169,7 @@ function ProjectSettingsView({ projectName }: { projectName: string }) {
     return () => controller.abort();
   }, [projectName, loadCount]);
 
-  if (loaded) return <LoadedProjectSettings projectName={projectName} loaded={loaded} />;
+  if (loaded) return <LoadedProjectSettings projectName={projectName} loaded={loaded} onReload={() => setLoadCount((count) => count + 1)} />;
 
   return (
     <SettingsShell projectName={projectName}>
@@ -278,7 +278,16 @@ function basicsInvalid(value: ProjectSettingsForm, facts: ProjectFacts): boolean
   );
 }
 
-function LoadedProjectSettings({ projectName, loaded }: { projectName: string; loaded: LoadedSettings }) {
+function LoadedProjectSettings({
+  projectName,
+  loaded,
+  onReload,
+}: {
+  projectName: string;
+  loaded: LoadedSettings;
+  /** 表单外的直接写回（如模式转换）后重新加载整页事实。 */
+  onReload: () => void;
+}) {
   const { t } = useTranslation("dashboard");
   const tab = parseTab(useSearch());
   const { facts, globals } = loaded;
@@ -366,7 +375,8 @@ function LoadedProjectSettings({ projectName, loaded }: { projectName: string; l
     voice: <TabBadge dirty={tabDirty("voice", value, savedValue)} />,
   };
 
-  const usesReferenceImages = facts.generationRoute === "reference_video";
+  // 混合模式同样展示参考家族的视频模型配置（逐单元定桶由服务端负责）。
+  const usesReferenceImages = facts.generationRoute === "reference_video" || facts.generationRoute === "mixed";
   const modelValue: ModelConfigValue = {
     ...value.models,
     videoResolution: value.models.videoResolutions?.[executingVideoModel(value.models, globals, usesReferenceImages)] ?? null,
@@ -375,7 +385,16 @@ function LoadedProjectSettings({ projectName, loaded }: { projectName: string; l
   let content: ReactNode;
   switch (tab) {
     case "basics":
-      content = <BasicsTab value={value} savedValue={savedValue} onChange={setValue} facts={facts} />;
+      content = (
+        <BasicsTab
+          value={value}
+          savedValue={savedValue}
+          onChange={setValue}
+          facts={facts}
+          projectName={projectName}
+          onReload={onReload}
+        />
+      );
       break;
     case "style":
       content = <StyleTab value={value.style} onChange={(style) => setValue((prev) => ({ ...prev, style }))} />;

@@ -1104,15 +1104,15 @@ def _stage_files(content_mode: str, generation_mode: str | None = None) -> dict[
     """按 generation_mode / content_mode 给出「草稿阶段名 → 文件名」映射
 
     ad 不走结构化 script_plan（与 _resolve_script_plan_path / script_review.script_plan_path 同口径显式
-    排除），即便带 reference_video generation_mode 也无 script_plan，故先于 generation_mode 判断返回空
-    映射，调用方据此给出「无此阶段」而非误落 drama / reference 文件名。reference_video 走
+    排除），即便带参考管线 generation_mode 也无 script_plan，故先于 generation_mode 判断返回空
+    映射，调用方据此给出「无此阶段」而非误落 drama / reference 文件名。reference_video / mixed 走
     generate_script_plan 工具 → script_plan_reference_units.json；其他模式回落到 content_mode
     的结构化 script_plan 文件名（未知 content_mode 兜底 drama）。结构化文件名取自单一真相源
     SCRIPT_PLAN_FILENAMES，新增 content_mode 自动覆盖。
     """
     if content_mode == "ad":
         return {}
-    if generation_mode == "reference_video":
+    if generation_mode in ("reference_video", "mixed"):
         return {_SCRIPT_PLAN_STAGE: REFERENCE_VIDEO_SCRIPT_PLAN_FILENAME}
     return {_SCRIPT_PLAN_STAGE: SCRIPT_PLAN_FILENAMES.get(content_mode, SCRIPT_PLAN_FILENAMES["drama"])}
 

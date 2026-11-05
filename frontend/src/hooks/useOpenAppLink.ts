@@ -19,7 +19,8 @@ export function useOpenAppLink(): (link: AppLink) => void {
       if (!link.unit) return;
       const { currentProjectName, currentProjectData } = useProjectsStore.getState();
       if (link.unit.project === null || link.unit.project !== currentProjectName) return;
-      const referenceVideo = normalizeRoute(currentProjectData?.generation_mode) === "reference_video";
+      // mixed 单元同样在参考画布上聚焦/起播：只有 storyboard 走分镜单元路线。
+      const referenceVideo = normalizeRoute(currentProjectData?.generation_mode) !== "storyboard";
       const app = useAppStore.getState();
       app.triggerScrollTo({ type: referenceVideo ? "reference_unit" : "segment", id: link.unit.id });
       app.requestPlaybackStart({

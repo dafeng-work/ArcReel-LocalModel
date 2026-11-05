@@ -53,6 +53,7 @@ class ReferenceUnitCapability:
             "unit_id": self.unit_id,
             "declared_capability": hydration.declared_generation_type,
             "hydrated_capability": hydration.hydrated_generation_type,
+            "first_frame": hydration.first_frame_declared if hydration.first_frame is not None else None,
             "declared_references": [
                 {"type": reference.type, "name": reference.name} for reference in hydration.declared_references
             ],
@@ -87,7 +88,9 @@ def hydrate_reference_units(
         return ()
     assets = availability if availability is not None else CurrentReferenceAssets(project_path, project)
     return tuple(
-        hydrate_unit_references(project, unit, resolve_reference_assets(project, project_path, unit), assets)
+        hydrate_unit_references(
+            project, unit, resolve_reference_assets(project, project_path, unit), assets, project_path=project_path
+        )
         for unit in pending
     )
 

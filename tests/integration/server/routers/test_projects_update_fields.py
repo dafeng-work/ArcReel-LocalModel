@@ -363,7 +363,13 @@ class TestProjectsRouter:
             assert off.status_code == 200
             assert fake_pm.project_data["ready"]["grid_storyboard"] is False
 
-            # 生成模式创建即定：项目 PATCH 模型结构上无 generation_mode，出现即被静默丢弃、不写盘
+            # 生成模式单向转换闸（ADR 0099）：两原模式互转 400 拒绝、不写盘
             route = client.patch("/api/v1/projects/ready", json={"generation_mode": "reference_video"})
-            assert route.status_code == 200
+            assert route.status_code == 400
             assert fake_pm.project_data["ready"]["generation_mode"] == "storyboard"
+
+            # 唯一放行的转换：storyboard → mixed，写盘并清除宫格开关
+            to_mixed = client.patch("/api/v1/projects/ready", json={"generation_mode": "mixed"})
+            assert to_mixed.status_code == 200
+            assert fake_pm.project_data["ready"]["generation_mode"] == "mixed"
+            assert fake_pm.project_data["ready"]["grid_storyboard"] is False

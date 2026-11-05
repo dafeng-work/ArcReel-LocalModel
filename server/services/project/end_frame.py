@@ -52,7 +52,7 @@ from lib.infra.image_utils import normalize_storyboard_upload
 from lib.infra.json_io import domain_error_on_value_error
 from lib.infra.path_safety import PathTraversalError, safe_join
 from lib.project.project_change_hints import project_change_source
-from lib.project.project_manager import ProjectManager, get_project_manager, is_reference_video_project
+from lib.project.project_manager import ProjectManager, get_project_manager, is_reference_family_project
 from lib.project.resource_paths import END_FRAME_RESOURCE_TYPE, resource_relative_path
 from lib.script.storyboard_sequence import find_storyboard_item, get_storyboard_items
 from server.services.currency.upload_finalize import UPLOAD_IMAGE_MAX_BYTES, write_bytes_atomic
@@ -92,8 +92,8 @@ class EndFrameError(Exception):
 def _locate_shot(project_name: str, script_file: str, shot_id: str) -> Path:
     """校验该分镜可设尾帧，返回项目绝对路径；不可设时抛领域错误。
 
-    参考生视频路径无首尾帧概念，一律拒绝。该判定按 project.json 的生成模式
-    （``is_reference_video_project``）作出，不看剧本级 ``generation_mode`` 戳——ad 创作类型的
+    参考生视频路径（含混合模式）无首尾帧概念，一律拒绝。该判定按 project.json 的生成模式
+    （``is_reference_family_project``）作出，不看剧本级 ``generation_mode`` 戳——ad 创作类型的
     剧本骨架不携带该戳（见 ``script_generator``），只看剧本会放过「ad + 参考生视频」组合，让用户
     设下一个生成时永不被消费的尾帧。各创作类型共用这一口径。
     """
@@ -117,7 +117,7 @@ def _locate_shot(project_name: str, script_file: str, shot_id: str) -> Path:
         project = manager.load_project(project_name)
     except FileNotFoundError as exc:
         raise EndFrameError("project_not_found", status_code=404, name=project_name) from exc
-    if is_reference_video_project(project):
+    if is_reference_family_project(project):
         raise EndFrameError("end_frame_reference_video_unsupported")
 
     items, id_field, _, _, _ = get_storyboard_items(script)

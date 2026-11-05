@@ -61,9 +61,10 @@ from lib.script.reference_video.request_projection import (
     VideoRequestFactsResult,
     hydrate_reference_assets,
     resolve_reference_assets,
+    resolve_unit_first_frame,
     unit_reference_declarations,
 )
-from lib.script.reference_video.units import reference_video_bucket
+from lib.script.reference_video.units import reference_video_bucket, resolve_unit_video_bucket
 from lib.script.reference_video.voice_settings import VoiceRenderSettings
 from lib.script.script_editor import ScriptEditError
 from lib.script.script_models import ReferenceResource
@@ -185,6 +186,7 @@ def reference_video_visual_basis_digest(
     unit: dict[str, Any],
     request_assets: Sequence[ResolvedReferenceAsset],
     request_facts: VideoRequestFacts,
+    first_frame: Path | None = None,
 ) -> str:
     """Hash the exact projected reference request and every prompt-affecting input."""
 
@@ -219,6 +221,7 @@ def reference_video_visual_basis_digest(
         reference_audio_speakers=audio_speakers,
         reference_audio_targets=audio_targets,
         request_facts=request_facts,
+        first_frame=first_frame,
     )
 
 
@@ -232,6 +235,7 @@ def materialized_reference_video_visual_basis_digest(
     reference_audio_speakers: Sequence[str],
     reference_audio_targets: Sequence[int] | None,
     request_facts: VideoRequestFacts,
+    first_frame: Path | None = None,
 ) -> str:
     """Hash a fully rendered request against the exact media bytes that will be submitted."""
 
@@ -264,6 +268,7 @@ def materialized_reference_video_visual_basis_digest(
             "max_reference_audio_count": request_facts.max_reference_audio_count,
             "reference_audio_per_image": request_facts.reference_audio_per_image,
         },
+        first_frame=first_frame,
     ).digest
 
 
@@ -320,14 +325,25 @@ async def execute_reference_video_task(
     resolved_assets = resolve_reference_assets(project, project_path, unit)
     asset_availability = CurrentReferenceAssets(project_path, project)
     hydration = hydrate_reference_assets(declared_references, resolved_assets, asset_availability)
+    # 混合模式首帧（ADR 0099）：字段已声明且文件存在即按带首帧定桶（i2v/fl2va 桶），
+    # 判据与投影侧 hydrate_unit_references 同一出口，两次读取之间文件被删会落到
+    # 投影的 first_frame_asset_missing 阻断，不静默换桶。
+    first_frame = resolve_unit_first_frame(project, unit, project_path)
 
     # 2. 单次解析生成上下文（声明 video lane）：构造 generator 并按实际 backend 身份
     #    查能力上限与 resolution。provider 身份解析收口于 GenerationContext
     #    （docs/adr/0049）——executor 不再触碰 MediaGenerator 私有属性、不再手工重建
-    #    registry provider_id。桶按本 unit 解析后的实际参考图分流（docs/adr/0054）：
-    #    有参考图 → r2v；无参考图的视频单元降级 → i2v，不送入拒空参考的 r2v 桶模型。
+    #    registry provider_id。桶按本 unit 解析后的实际首帧 / 参考图分流（docs/adr/0054）：
+    #    混合模式：首帧可用 → i2v（fl2va），无首帧恒 r2v（ref2va），无参考图也不降级 i2v；
+    #    参考生视频模式：有参考图 → r2v，无图的视频单元降级 → i2v，不送入拒空参考的 r2v 桶模型。
     #    判据取解析结果而非声明，与 backend 的实际请求同源。
-    execution_generation_type = reference_video_bucket(with_references=bool(hydration.available))
+    if project.get("generation_mode") == "mixed":
+        execution_generation_type = resolve_unit_video_bucket(project, unit, project_path)
+    else:
+        execution_generation_type = reference_video_bucket(
+            with_references=bool(hydration.available),
+            first_frame_available=first_frame is not None,
+        )
     execution_payload = without_reference_video_execution_identity(payload)
     request_options = ReferenceRequestOptions.from_payload(payload, legacy_duration_confirmed=True)
     ctx = await resolve_generation_context(
@@ -398,6 +414,7 @@ async def execute_reference_video_task(
             unit=unit,
             request_assets=constrained_entries,
             request_facts=request_facts,
+            first_frame=first_frame.path if first_frame is not None else None,
         )
 
     visual_basis_digest = await asyncio.to_thread(_current_visual_basis_digest)
@@ -451,6 +468,7 @@ async def execute_reference_video_task(
     # 5. Worker submissions use immutable task-local inputs.
     provider_refs = constrained_refs
     provider_audio = reference_audio_files or None
+    provider_first_frame = first_frame.path if first_frame is not None else None
     staged_media: tuple[StagedProviderMedia, ...] = ()
     checkpoint_hook: Callable[[], Awaitable[Mapping[str, object] | None]] | None = None
     if task_id is not None:
@@ -467,6 +485,17 @@ async def execute_reference_video_task(
             )
             for entry in constrained_entries
         )
+        # 混合模式首帧随媒体暂存为 start_image（fl2va 端点的起始帧槽），不占参考图槽。
+        if first_frame is not None:
+            image_inputs = (
+                ProviderMediaInput(
+                    path=first_frame.path,
+                    role="start_image",
+                    logical_type="unit",
+                    logical_name=resource_id,
+                    kind="first_frame",
+                ),
+            ) + image_inputs
         if reference_audio_targets is None:
             audio_names = rendered.audio_speakers
             audio_target_values: list[int | None] = [None] * len(reference_audio_files)
@@ -516,7 +545,14 @@ async def execute_reference_video_task(
                 for media in staged_media
                 if media.role == "reference_audio"
             ]
+            staged_first_frames = [
+                safe_join(project_path, media.staged_locator, require_file=True)
+                for media in staged_media
+                if media.role == "start_image"
+            ]
             provider_audio = staged_audio_paths or None
+            if staged_first_frames:
+                provider_first_frame = staged_first_frames[0]
             visual_basis_digest = await asyncio.to_thread(
                 materialized_reference_video_visual_basis_digest,
                 rendered_prompt=rendered_prompt,
@@ -527,10 +563,13 @@ async def execute_reference_video_task(
                 reference_audio_speakers=audio_names,
                 reference_audio_targets=reference_audio_targets,
                 request_facts=request_facts,
+                first_frame=staged_first_frames[0] if staged_first_frames else None,
             )
             staged_request_assets = tuple(
                 replace(entry, path=path) for entry, path in zip(constrained_entries, provider_refs, strict=True)
             )
+            if staged_first_frames and first_frame is not None:
+                staged_request_assets = staged_request_assets + (replace(first_frame, path=staged_first_frames[0]),)
             artifact_visual_basis = await asyncio.to_thread(
                 lambda: build_reference_video_artifact_visual_basis(
                     unit=unit,
@@ -643,6 +682,7 @@ async def execute_reference_video_task(
             reference_images=provider_refs,
             reference_audio_files=provider_audio,
             reference_audio_targets=reference_audio_targets,
+            start_image=provider_first_frame,
             aspect_ratio=aspect_ratio,
             duration_seconds=effective_duration,
             resolution=resolution,

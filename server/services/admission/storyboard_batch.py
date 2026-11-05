@@ -56,7 +56,7 @@ from lib.generation.generation_result import (
 )
 from lib.generation.video_request_facts import VideoRequestCostFacts, VideoRequestFacts, VideoRequestFactsFailure
 from lib.infra.schema_guards import is_int
-from lib.project.project_manager import ProjectManager, find_episode, is_reference_video_project
+from lib.project.project_manager import ProjectManager, find_episode, is_reference_family_project
 from lib.prompts.prompt_builders import render_storyboard_image_prompt
 from lib.references.reference_admission import admit_storyboard_item
 from lib.references.reference_catalog import build_reference_catalog
@@ -138,7 +138,7 @@ def load_episode_storyboard_script(
     """
 
     project = projects.load_project(project_name)
-    if is_reference_video_project(project):
+    if is_reference_family_project(project):
         raise StoryboardBatchRouteMismatch("参考生视频项目没有分镜图步骤")
     entry = find_episode(project, episode_id)
     recorded = entry.get("script_file") if entry is not None else None

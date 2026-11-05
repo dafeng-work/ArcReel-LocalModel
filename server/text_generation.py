@@ -48,7 +48,7 @@ from lib.infra.path_safety import PathTraversalError, safe_join
 from lib.infra.schema_guards import is_int, is_str
 from lib.infra.text_utils import strip_json_code_fences
 from lib.project.asset_types import ASSET_SPECS, BUCKET_KEY, asset_name_comparison_key
-from lib.project.project_manager import ProjectManager, is_reference_video_project
+from lib.project.project_manager import ProjectManager, is_reference_family_project
 from lib.prompts.prompt_builders_reference import build_reference_units_split_prompt
 from lib.prompts.prompt_builders_script import build_narration_split_prompt, build_normalize_prompt
 from lib.references.reference_catalog import ReferenceCatalog, build_reference_catalog
@@ -492,8 +492,8 @@ def _load_script_plan_source_with_basis(
 
 
 def uses_reference_video_units(project_data: dict[str, Any]) -> bool:
-    """脚本规划草稿仅适用于非广告的参考生视频项目。"""
-    return project_data.get("content_mode", "narration") != "ad" and is_reference_video_project(project_data)
+    """脚本规划草稿仅适用于非广告的参考管线项目（参考生视频 / 混合模式）。"""
+    return project_data.get("content_mode", "narration") != "ad" and is_reference_family_project(project_data)
 
 
 class OperationNotAdmittedError(TextGenerationError):

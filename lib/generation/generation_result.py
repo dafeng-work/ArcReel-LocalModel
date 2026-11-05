@@ -107,6 +107,9 @@ class GenerationProblemCode(StrEnum):
     """This unit itself passed admission, but a sibling in the same batch did
     not. Batch video generation is all-or-nothing before any task is created, so
     the whole target set is reported as blocked rather than half-submitted."""
+    MIXED_MODE_BATCH_NOT_SUPPORTED = "generation_mixed_mode_batch_not_supported"
+    """The project is in mixed generation mode, which generates units one at a
+    time; batch queueing is refused for every unit of the request."""
     TASK_FAILED = "generation_task_failed"
     TASK_CANCELLED = "generation_task_cancelled"
     TASK_INTERRUPTED = "generation_task_interrupted"

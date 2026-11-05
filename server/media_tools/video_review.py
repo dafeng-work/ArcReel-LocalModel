@@ -20,7 +20,7 @@ from lib.artifacts.version_manager import VersionManager
 from lib.final_cut.basis import version_snapshot
 from lib.infra.ffmpeg import FfmpegUnavailableError
 from lib.infra.media_probe import MediaProbeError, probe_video_frame_times
-from lib.project.project_manager import is_reference_video_project
+from lib.project.project_manager import is_reference_family_project
 from lib.video_review.contact_sheet import MAX_SHOT_FRAMES, ContactSheet, ContactSheetError, build_contact_sheets
 from lib.video_review.signals import SignalDetectionError, VideoSignals, signals_for
 from server.agent_toolset.declaration import ToolImage
@@ -159,7 +159,7 @@ async def inspect_video_units(
                 f"视频单元不存在：{', '.join(missing)}", code="video_unit_not_found", params={"unit_ids": missing}
             )
 
-        resource_type = "reference_videos" if is_reference_video_project(project) else "videos"
+        resource_type = "reference_videos" if is_reference_family_project(project) else "videos"
         project_path = services.projects.get_project_path(scope.project_name)
         versions = VersionManager(project_path)
         targets: list[tuple[str, int | None, Path | None]] = []

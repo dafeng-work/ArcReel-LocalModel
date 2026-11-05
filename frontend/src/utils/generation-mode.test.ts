@@ -2,8 +2,8 @@ import { describe, it, expect } from "vitest";
 import { gridStoryboardEnabled, normalizeRoute, type GenerationRoute } from "./generation-mode";
 
 describe("normalizeRoute", () => {
-  it("keeps both routes", () => {
-    for (const r of ["storyboard", "reference_video"] as GenerationRoute[]) {
+  it("keeps all three routes", () => {
+    for (const r of ["storyboard", "reference_video", "mixed"] as GenerationRoute[]) {
       expect(normalizeRoute(r)).toBe(r);
     }
   });

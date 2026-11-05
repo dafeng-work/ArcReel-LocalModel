@@ -5,23 +5,24 @@ import { cn } from "cn";
 import type { GenerationRoute } from "@/utils/generation-mode";
 
 /**
- * 生成模式二选一卡（创建向导）。
+ * 生成模式三选一卡（创建向导）。
  *
- * 无预选、必选：生成模式创建后不可更改，让这个不可逆决策以对比形态呈现。
- * 卡内图示画的是两个生成模式各自喂给视频模型的输入契约——分镜图生视频是单张分镜图（I2V），
- * 参考生视频是角色/场景/道具参考图集合（R2V），这正是区分生成模式的判据。
+ * 无预选、必选：mixed 为单向汇点（创建后 storyboard / reference_video 项目仍可单向转入），
+ * 让决策以对比形态呈现。卡内图示画的是各模式喂给视频模型的输入契约——分镜图生视频是单张
+ * 分镜图（I2V），参考生视频是角色/场景/道具参考图集合（R2V），混合模式逐单元二选一。
  */
 
 /**
- * 生成模式的文案与输入契约标签。向导二卡与设置页只读展示共用同一份，
- * 避免两处各自维护「生成模式 → 名称 / 描述 / I2V-R2V」的对应关系而漂移。
+ * 生成模式的文案与输入契约标签。向导卡与设置页只读展示共用同一份，
+ * 避免多处各自维护「生成模式 → 名称 / 描述 / 契约标签」的对应关系而漂移。
  */
 export const ROUTE_META: Record<GenerationRoute, { nameKey: string; descKey: string; tag: string }> = {
   storyboard: { nameKey: "route_storyboard", descKey: "route_storyboard_desc", tag: "I2V" },
   reference_video: { nameKey: "route_reference_video", descKey: "route_reference_video_desc", tag: "R2V" },
+  mixed: { nameKey: "route_mixed", descKey: "route_mixed_desc", tag: "I2V+R2V" },
 };
 
-/** 「创建后不可更改」琥珀锁形徽章。与区块标题同行，设置页只读展示复用。 */
+/** 「创建后可转为混合模式」琥珀锁形徽章。与区块标题同行，设置页只读展示复用。 */
 export function RouteLockBadge() {
   const { t } = useTranslation("dashboard");
   return (
@@ -83,10 +84,34 @@ function ReferenceDiagram({ active }: { active: boolean }) {
   );
 }
 
-/** 呈现顺序：分镜图生视频在左（默认路径），参考生视频在右。 */
+/** 输入契约图示：逐单元二选一——附首帧走首帧路线（I2V），不附走参考路线（R2V）。 */
+function MixedDiagram({ active }: { active: boolean }) {
+  const iconCls = cn("size-3.5", active ? "text-primary" : "text-muted-foreground");
+  const playCls = cn("size-3", active ? "fill-primary text-primary" : "fill-muted-foreground text-muted-foreground");
+  const row = cn("flex h-8 items-center gap-1 rounded-sm border px-1.5 transition-colors", frameClass(active));
+  return (
+    <span aria-hidden className="flex items-center gap-2.5">
+      <span className="flex flex-col gap-1.5">
+        <span className={row}>
+          <ImageIcon className={iconCls} />
+          <ArrowRight className="size-3 shrink-0 text-muted-foreground" />
+          <Play className={playCls} />
+        </span>
+        <span className={row}>
+          <User className={iconCls} />
+          <ArrowRight className="size-3 shrink-0 text-muted-foreground" />
+          <Play className={playCls} />
+        </span>
+      </span>
+    </span>
+  );
+}
+
+/** 呈现顺序：分镜图生视频在左（默认路径），参考生视频居中，混合模式在右。 */
 const ROUTE_CARDS: readonly { route: GenerationRoute; Diagram: (props: { active: boolean }) => ReactNode }[] = [
   { route: "storyboard", Diagram: StoryboardDiagram },
   { route: "reference_video", Diagram: ReferenceDiagram },
+  { route: "mixed", Diagram: MixedDiagram },
 ];
 
 export interface GenerationRouteCardsProps {
@@ -114,7 +139,7 @@ export function GenerationRouteCards({ value, onChange, children }: GenerationRo
         role="radiogroup"
         aria-labelledby={labelId}
         aria-required="true"
-        className="grid grid-cols-2 gap-2.5"
+        className="grid grid-cols-1 gap-2.5 sm:grid-cols-3"
       >
         {ROUTE_CARDS.map(({ route, Diagram }) => {
           const selected = value === route;

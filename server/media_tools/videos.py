@@ -44,7 +44,7 @@ from lib.generation.generation_result import (
     select_generation_targets,
 )
 from lib.generation.video_request_facts import VideoRequestFacts, VideoRequestFactsFailure
-from lib.project.project_manager import ProjectManager, is_reference_video_project
+from lib.project.project_manager import ProjectManager, is_reference_family_project
 from lib.script.reference_video.request_projection import ReferenceRequestOptions
 from lib.script.script_models import get_generated_assets, resolve_content_mode
 from lib.script.script_skeleton import ensure_route_skeleton, resolve_script_kind
@@ -454,7 +454,7 @@ def _resolve_reference_route(call: _VideoCall, script: dict[str, Any]) -> str | 
     project = call.projects.load_project(call.project_name)
     content_mode = resolve_content_mode(script, project)
     ensure_route_skeleton(script, content_mode, project.get("generation_mode"))
-    if not is_reference_video_project(project):
+    if not is_reference_family_project(project):
         return None
     return "reference"
 

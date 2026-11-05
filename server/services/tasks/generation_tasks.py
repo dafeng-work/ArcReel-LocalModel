@@ -78,7 +78,7 @@ from lib.project.project_manager import (
     EpisodeScriptReboundError,
     ProjectManager,
     get_project_manager,
-    is_reference_video_project,
+    is_reference_family_project,
     resolve_episode_script_binding,
 )
 from lib.project.resource_paths import CHARACTER_DERIVATIVE_RESOURCE_TYPE, resource_relative_path
@@ -382,7 +382,7 @@ def emit_generation_success_batch(
         reference_route_task = task_type == "reference_video"
         if task_type == "tts":
             try:
-                reference_route_task = is_reference_video_project(get_project_manager().load_project(project_name))
+                reference_route_task = is_reference_family_project(get_project_manager().load_project(project_name))
             except Exception:
                 reference_route_task = False
         if reference_route_task:
@@ -585,7 +585,7 @@ async def execute_tts_task(
     def _prepare() -> tuple[dict, Path, str, Any | None, int | None, bool, tuple[ArtifactInputClaim, ...]]:
         pm = get_project_manager()
         current_project = pm.load_project(project_name)
-        reference_video_route = is_reference_video_project(current_project)
+        reference_video_route = is_reference_family_project(current_project)
         project_path = pm.get_project_path(project_name)
         if script_file:
             script = pm.load_script(project_name, script_file)

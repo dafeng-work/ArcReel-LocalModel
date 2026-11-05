@@ -580,7 +580,7 @@ describe("ProjectSettingsPage – 基础", () => {
     renderAt("/app/projects/demo/settings");
 
     expect(await screen.findByText(/跳过分镜图，直接用角色、场景、道具图作为参考生成视频/)).toBeInTheDocument();
-    expect(screen.getByText(/生成方式创建后不可更改/)).toBeInTheDocument();
+    expect(screen.getByText(/创建后可转为混合模式/)).toBeInTheDocument();
     expect(screen.queryByRole("radio", { name: /参考生视频|分镜图生视频/ })).not.toBeInTheDocument();
     // 参考生视频下不呈现宫格开关
     expect(screen.queryByRole("switch", { name: /多宫格分镜/ })).not.toBeInTheDocument();

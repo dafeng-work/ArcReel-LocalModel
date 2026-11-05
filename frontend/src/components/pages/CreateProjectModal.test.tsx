@@ -129,8 +129,9 @@ const clickNext = () => fireEvent.click(nextButton());
 /** 填好第一步的必填项：标题、创作类型、生成方式。 */
 function fillBasics({ mode = "旁白/解说", route = "分镜图生视频" }: { mode?: string; route?: string } = {}) {
   fireEvent.change(screen.getByRole("textbox", { name: "项目标题" }), { target: { value: "demo" } });
-  fireEvent.click(screen.getByRole("radio", { name: new RegExp(mode) }));
-  fireEvent.click(screen.getByRole("radio", { name: new RegExp(route) }));
+  // 锚定开头：混合模式卡的描述文案里也含「参考生视频」，不锚定会撞出两个 radio。
+  fireEvent.click(screen.getByRole("radio", { name: new RegExp(`^${mode}`) }));
+  fireEvent.click(screen.getByRole("radio", { name: new RegExp(`^${route}`) }));
 }
 
 /** 从第一步走到第三步，停在「创建项目」可点的状态。 */
@@ -165,7 +166,7 @@ describe("CreateProjectModal", () => {
     fireEvent.click(screen.getByRole("radio", { name: /剧情演绎/ }));
     expect(nextButton()).toHaveAccessibleDescription("还需要：生成方式");
 
-    fireEvent.click(screen.getByRole("radio", { name: /参考生视频/ }));
+    fireEvent.click(screen.getByRole("radio", { name: /^参考生视频/ }));
     expect(nextButton()).toBeEnabled();
     expect(nextButton()).not.toHaveAccessibleDescription();
   });
@@ -310,7 +311,7 @@ describe("CreateProjectModal", () => {
     fillBasics();
     fireEvent.click(screen.getByRole("switch", { name: "多宫格分镜" }));
     // 切到参考生视频清空开关，切回来时保持关闭
-    fireEvent.click(screen.getByRole("radio", { name: /参考生视频/ }));
+    fireEvent.click(screen.getByRole("radio", { name: /^参考生视频/ }));
     expect(screen.queryByRole("switch", { name: "多宫格分镜" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("radio", { name: /分镜图生视频/ }));
     expect(screen.getByRole("switch", { name: "多宫格分镜" })).not.toBeChecked();
@@ -415,7 +416,7 @@ describe("CreateProjectModal", () => {
     fireEvent.click(await screen.findByRole("radio", { name: "4 秒" }));
     fireEvent.change(screen.getByRole("combobox", { name: /分辨率/ }), { target: { value: "1080p" } });
     fireEvent.click(screen.getByRole("button", { name: "上一步" }));
-    fireEvent.click(screen.getByRole("radio", { name: /参考生视频/ }));
+    fireEvent.click(screen.getByRole("radio", { name: /^参考生视频/ }));
     fireEvent.click(await walkToStyle());
     // 执行模型换成 seedance：4 秒不在其支持集内、1080p 也不是它的分辨率，两者都不跟进载荷
     await waitFor(() =>

@@ -30,6 +30,7 @@ from lib.generation.video_request_facts import (
 )
 from lib.infra.path_safety import PathTraversalError, safe_join
 from lib.infra.schema_guards import is_int
+from lib.script.reference_video.units import is_first_frame_available
 from lib.project.asset_types import AssetSpec, asset_name_comparison_key
 from lib.references.reference_admission import (
     SHEET_REQUIRED_ASSET_TYPES,
@@ -98,10 +99,14 @@ class ReferenceRequestOptions:
 
 @dataclass(frozen=True)
 class ResolvedReferenceAsset:
-    """一个逻辑引用展开出的图片候选；可用性由注入的资产适配器判断。"""
+    """一个逻辑引用展开出的图片候选；可用性由注入的资产适配器判断。
+
+    首帧候选（混合模式显式 authoring 字段）不带逻辑引用，``reference`` 为 None、
+    ``kind="first_frame"``；可用性只过文件存在判定，不走产物清单认领。
+    """
 
     path: Path
-    reference: ReferenceResource
+    reference: ReferenceResource | None = None
     kind: str = "asset"
 
 
@@ -187,6 +192,8 @@ class ReferenceUnitRequestProjection:
     #: 两者的对外载荷键固定为 ``declared_capability`` / ``hydrated_capability``（API 契约）。
     declared_generation_type: VideoGenerationType
     hydrated_generation_type: VideoGenerationType
+    #: 首帧可用时的项目相对首帧路径（``first_frame_asset`` 字段值）；未声明或文件缺失为 None。
+    first_frame_asset: str | None
     #: 单元所落桶的视频请求事实；求值失败时为 None，失败已折成 ``problems`` 里的阻断项。
     request_facts: VideoRequestFacts | None
     planned_duration: int
@@ -220,6 +227,7 @@ class ReferenceUnitRequestProjection:
             "unit_id": self.unit_id,
             "declared_capability": self.declared_generation_type,
             "hydrated_capability": self.hydrated_generation_type,
+            "first_frame": self.first_frame_asset,
             "provider_id": self.provider_id,
             "model_id": self.model_id,
             "planned_duration": self.planned_duration,
@@ -290,9 +298,10 @@ def hydrate_reference_assets(
 class ReferenceUnitHydration:
     """一个单元的声明引用经水合后的定桶结论——执行侧与读侧共用的判据。
 
-    ``declared_generation_type`` 只看正文里已登记的声明引用；``hydrated_generation_type`` 看此刻
-    确实能随请求发出的可用参考图，单元实际落哪个桶以它为准。声明与可用参考图分裂（引用未登记、
-    已登记但缺图、桶因此改变）时 ``problems`` 带阻断问题并点名不可用的引用，不静默换桶。
+    ``declared_generation_type`` 只看正文里已登记的声明引用（混合模式附首帧时为 i2v 意图）；
+    ``hydrated_generation_type`` 看此刻确实能随请求发出的可用首帧 / 参考图，单元实际落哪个桶
+    以它为准。声明与可用素材分裂（引用未登记、已登记但缺图、首帧缺失、桶因此改变）时
+    ``problems`` 带阻断问题并点名不可用的素材，不静默换桶。
     """
 
     declared_references: tuple[ReferenceResource, ...]
@@ -304,6 +313,30 @@ class ReferenceUnitHydration:
     declared_generation_type: VideoGenerationType
     hydrated_generation_type: VideoGenerationType
     problems: tuple[ProjectionProblem, ...]
+    #: 混合模式单元声明的首帧项目相对路径；None = 未声明（含非混合模式，字段被忽略）。
+    first_frame_declared: str | None = None
+    #: 此刻可用的首帧（文件存在）；None = 未声明或文件缺失。
+    first_frame: ResolvedReferenceAsset | None = None
+
+
+def resolve_unit_first_frame(
+    project: dict,
+    unit: dict,
+    project_path: Path,
+) -> ResolvedReferenceAsset | None:
+    """混合模式单元的首帧（``first_frame_asset``）：字段已声明且文件存在时返回资产。
+
+    判据与执行侧定桶共用同一出口：非混合模式忽略该字段；未声明、越界或文件缺失返回
+    None（缺失的阻断问题由 ``hydrate_unit_references`` 在投影侧点名）。
+    """
+    if project.get("generation_mode") != "mixed":
+        return None
+    if not is_first_frame_available(unit, project_path):
+        return None
+    candidate = _candidate_path(project_path, unit["first_frame_asset"])
+    if candidate is None:
+        return None
+    return ResolvedReferenceAsset(path=candidate, kind="first_frame")
 
 
 def hydrate_unit_references(
@@ -311,11 +344,17 @@ def hydrate_unit_references(
     unit: dict,
     resolved_assets: Sequence[ResolvedReferenceAsset],
     availability: ReferenceAssetAvailability,
+    *,
+    project_path: Path | None = None,
 ) -> ReferenceUnitHydration:
-    """把单元正文的声明引用水合成可用参考图，并据此定桶。"""
+    """把单元正文的声明引用与混合模式首帧字段水合成可用素材，并据此定桶。
+
+    首帧（``first_frame_asset``）仅混合模式读取：文件存在即可用，判定与参考图同一适配器；
+    字段已设但文件缺失 → 阻断 ``first_frame_asset_missing``，不静默换桶。非混合模式忽略该
+    字段（``reference_video`` 二值锁维持）。
+    """
 
     canonical = unit_reference_declarations(project, unit)
-    declared_generation_type: VideoGenerationType = "r2v" if canonical else "i2v"
     hydration = hydrate_reference_assets(canonical, resolved_assets, availability)
     available = hydration.available
 
@@ -344,7 +383,26 @@ def hydrate_unit_references(
             )
         )
 
-    hydrated_generation_type: VideoGenerationType = "r2v" if available else "i2v"
+    # 首帧水合：仅混合模式读取显式 authoring 字段，越界 / 缺文件均阻断（不静默换桶）。
+    first_frame_declared: str | None = None
+    first_frame: ResolvedReferenceAsset | None = None
+    if project.get("generation_mode") == "mixed":
+        raw = unit.get("first_frame_asset")
+        if isinstance(raw, str) and raw.strip():
+            first_frame_declared = raw
+            candidate = _candidate_path(project_path, raw) if project_path is not None else None
+            candidate_asset = ResolvedReferenceAsset(path=candidate, kind="first_frame") if candidate is not None else None
+            if candidate_asset is not None and availability.is_available(candidate_asset):
+                first_frame = candidate_asset
+            else:
+                problems.append(_problem("first_frame_asset_missing", blocking=True, path=raw))
+
+    # 首帧可用时定桶意图与落桶都是 i2v（首帧优先，即使正文有参考图）；首帧缺失时意图仍是
+    # i2v 而落桶回参考图事实，两者分裂由 reference_capability_changed 一并点名。
+    declared_generation_type: VideoGenerationType = (
+        "i2v" if first_frame_declared is not None else ("r2v" if canonical else "i2v")
+    )
+    hydrated_generation_type: VideoGenerationType = "i2v" if first_frame is not None else ("r2v" if available else "i2v")
     if hydrated_generation_type != declared_generation_type:
         problems.append(
             _problem(
@@ -362,6 +420,8 @@ def hydrate_unit_references(
         declared_generation_type=declared_generation_type,
         hydrated_generation_type=hydrated_generation_type,
         problems=tuple(problems),
+        first_frame_declared=first_frame_declared,
+        first_frame=first_frame,
     )
 
 
@@ -476,6 +536,8 @@ def clamp_reference_assets(
 
 _PROBLEM_PRESENTATION: dict[str, tuple[str, tuple[tuple[str | int, ...], ...]]] = {
     "reference_asset_missing": ("repair_reference_assets", (("text",),)),
+    "first_frame_asset_missing": ("repair_reference_assets", (("first_frame_asset",),)),
+    "references_ignored_in_first_frame_mode": ("review_reference_selection", (("first_frame_asset",),)),
     UNREGISTERED_REFERENCE_CODE: ("repair_reference_assets", (("text",),)),
     "reference_capability_changed": ("repair_reference_assets", (("text",),)),
     "reference_images_clamped": ("review_reference_selection", (("text",),)),
@@ -521,9 +583,12 @@ class ReferenceUnitRequestProjector:
         self,
         request_facts: ReferenceRequestFactsLookup,
         assets: ReferenceAssetAvailability,
+        *,
+        project_path: Path | None = None,
     ) -> None:
         self._request_facts = request_facts
         self._assets = assets
+        self._project_path = project_path
 
     async def project_current(
         self,
@@ -538,9 +603,12 @@ class ReferenceUnitRequestProjector:
 
         del script
         options = options or ReferenceRequestOptions()
-        hydration = hydrate_unit_references(project, unit, resolved_assets, self._assets)
+        hydration = hydrate_unit_references(
+            project, unit, resolved_assets, self._assets, project_path=self._project_path
+        )
         canonical = hydration.declared_references
         available = hydration.available_assets
+        first_frame = hydration.first_frame
         declared_generation_type = hydration.declared_generation_type
         hydrated_generation_type = hydration.hydrated_generation_type
 
@@ -561,17 +629,18 @@ class ReferenceUnitRequestProjector:
             facts = evaluated
 
         request_assets = available
+        # 能力闸判据：参考图可用或首帧可用即按「带图」判（首帧单元查 fl2va，无图查 text_to_video）。
+        has_image = bool(available) or first_frame is not None
         if facts is not None:
-            if (
-                hydrated_generation_type == "i2v"
-                and not available
-                and not video_capability_satisfied(
-                    generation_type=hydrated_generation_type,
-                    first_frame=facts.first_frame,
-                    max_reference_images=facts.max_reference_images or 0,
-                    text_to_video=facts.text_to_video,
-                    has_image=False,
-                )
+            # 仅 i2v 桶过能力闸：r2v 桶能力已由按 capability=r2v 的 request-facts 解析保证，
+            # 这里不重复判（避免对 max_reference_images 为 0 的端点误阻断）。
+            # i2v 桶按 has_image 分流判据：无图查 text_to_video，带首帧查 first_frame（fl2va）。
+            if hydrated_generation_type == "i2v" and not video_capability_satisfied(
+                generation_type="i2v",
+                first_frame=facts.first_frame,
+                max_reference_images=facts.max_reference_images or 0,
+                text_to_video=facts.text_to_video,
+                has_image=has_image,
             ):
                 problems.append(
                     _problem(
@@ -581,18 +650,32 @@ class ReferenceUnitRequestProjector:
                         model=facts.model_id,
                     )
                 )
-            request_assets = clamp_reference_assets(available, facts.max_reference_images)
-            if len(request_assets) < len(available):
-                problems.append(
-                    _problem(
-                        "reference_images_clamped",
-                        blocking=False,
-                        count=len(available),
-                        max_count=facts.max_reference_images,
-                        provider=facts.provider_id,
-                        model=facts.model_id,
+            if first_frame is not None:
+                # 首帧模式：参考图不随请求发出（fl2va 端点无参考槽），只保留非阻断提示。
+                request_assets = ()
+                if available:
+                    problems.append(
+                        _problem(
+                            "references_ignored_in_first_frame_mode",
+                            blocking=False,
+                            count=len(available),
+                            provider=facts.provider_id,
+                            model=facts.model_id,
+                        )
                     )
-                )
+            else:
+                request_assets = clamp_reference_assets(available, facts.max_reference_images)
+                if len(request_assets) < len(available):
+                    problems.append(
+                        _problem(
+                            "reference_images_clamped",
+                            blocking=False,
+                            count=len(available),
+                            max_count=facts.max_reference_images,
+                            provider=facts.provider_id,
+                            model=facts.model_id,
+                        )
+                    )
             if audio_switch_conflict(facts) is not None:
                 problems.append(
                     _problem(
@@ -661,6 +744,7 @@ class ReferenceUnitRequestProjector:
             request_assets=request_assets,
             declared_generation_type=declared_generation_type,
             hydrated_generation_type=hydrated_generation_type,
+            first_frame_asset=hydration.first_frame_declared if first_frame is not None else None,
             request_facts=facts,
             planned_duration=planned_duration,
             duration_input=duration_input,
@@ -699,6 +783,7 @@ async def project_reference_unit_request(
     projector = ReferenceUnitRequestProjector(
         request_facts_lookup,
         CurrentReferenceAssets(project_path, project),
+        project_path=project_path,
     )
     return await projector.project_current(
         project=project,

@@ -43,7 +43,7 @@ from lib.infra.json_io import atomic_write_json, load_json_or_none
 from lib.infra.path_safety import try_safe_join
 from lib.infra.validation_messages import default_translate
 from lib.project.project_activity import record_project_activity
-from lib.project.project_manager import ProjectManager, find_episode, is_reference_video_project
+from lib.project.project_manager import ProjectManager, find_episode, is_reference_family_project
 from lib.script.draft_quarantine import (
     DRAFT_OWNER_AGENT,
     QUARANTINE_KIND_DRAMA_SCRIPT_PLAN,
@@ -95,7 +95,7 @@ def script_plan_kind(project: dict[str, Any]) -> ScriptPlanKind | None:
     content_mode = project.get("content_mode")
     if content_mode not in SCRIPT_PLAN_FILENAMES:
         return None
-    if is_reference_video_project(project):
+    if is_reference_family_project(project):
         return "reference_video"
     return content_mode  # "drama" | "narration"（SCRIPT_PLAN_FILENAMES 成员）
 

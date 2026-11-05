@@ -311,6 +311,8 @@ export function ReferenceVideoCanvas({
   const error = useReferenceVideoStore((s) => s.error);
   const loading = useReferenceVideoStore((s) => s.loading);
   const project = useProjectsStore((s) => s.currentProjectData);
+  // 混合模式逐单元自选路线，不支持批量排队（服务端批量闸结构化拒绝），批量按钮在 UI 层先行禁用。
+  const isMixedMode = project?.generation_mode === "mixed";
   // schema v6 起各 bucket 共用名称空间，每个名字只会声明一次。
   const mentionLookup = useMemo(() => buildMentionLookup(project), [project]);
   // 提示词编写草稿：待修复草稿在视频单元页取代工作台呈现，Agent 的可编辑草稿只在工作台上方提示。
@@ -958,6 +960,7 @@ export function ReferenceVideoCanvas({
     <UnitPreviewPanel
       unit={selected}
       projectName={projectName}
+      episode={episode}
       status={selected ? statusMap[selected.unit_id] : undefined}
       errorMessage={failureMessage}
       busy={selectedBusy}
@@ -1160,7 +1163,8 @@ export function ReferenceVideoCanvas({
             kind="videos"
             count={videoGap}
             units
-            disabled={batchTargets.length === 0}
+            // 混合模式不支持批量排队：与 batchTargets 口径独立——mixed 项目下即便有待生成 unit 也不放行。
+            disabled={isMixedMode || batchTargets.length === 0}
             onClick={() => void handleBatchGenerate()}
           />
         </EpisodeHeaderActions>

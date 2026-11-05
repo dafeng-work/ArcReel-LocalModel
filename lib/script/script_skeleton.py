@@ -132,7 +132,7 @@ def resolve_declared_kind(content_mode: str | None, generation_mode: str | None)
 
     输入为项目级已过校验的 content_mode 与项目声明的 generation_mode（``project.json`` 字段）。
 
-    - 任意创作类型 + ``generation_mode == "reference_video"`` → ``video_units``
+    - 任意创作类型 + ``generation_mode`` 为 ``reference_video`` / ``mixed`` → ``video_units``
     - ``ad`` + ``storyboard`` → ``shots``
     - ``narration`` → ``segments``，``drama`` → ``scenes``
     - 未知/缺失 content_mode → 抛 ``ValueError``（fail-loud，不静默默认到 drama/narration）
@@ -140,11 +140,11 @@ def resolve_declared_kind(content_mode: str | None, generation_mode: str | None)
     服务只有项目配置在手的消费方；手持可能缺字段的剧本 dict 的消费方走 ``resolve_script_kind``。
     """
     if content_mode == "ad":
-        return "video_units" if generation_mode == "reference_video" else "shots"
+        return "video_units" if generation_mode in ("reference_video", "mixed") else "shots"
     if content_mode == "narration":
-        return "video_units" if generation_mode == "reference_video" else "segments"
+        return "video_units" if generation_mode in ("reference_video", "mixed") else "segments"
     if content_mode == "drama":
-        return "video_units" if generation_mode == "reference_video" else "scenes"
+        return "video_units" if generation_mode in ("reference_video", "mixed") else "scenes"
     raise ValueError(f"未知或缺失 content_mode: {content_mode!r}")
 
 
@@ -264,7 +264,7 @@ def ensure_route_skeleton(script: dict[str, Any], content_mode: str | None, gene
 
     - 参考生视频只问 ``video_units`` 键在不在。剧本同时残留分镜族数组时取证解析会按形状优先答
       ``segments``，但参考生视频的生成侧读的就是 ``video_units``，残留数组不参与投票（费用估算
-      同此口径：``is_reference_video_project`` 定路径，形状不投票）。
+      同此口径：``is_reference_family_project`` 定路径，形状不投票）。
     - 分镜图生视频只问 ``segments`` / ``scenes`` / ``shots`` 有没有一个在场。族内的历史形态差异
       （narration 数据落 ``scenes`` 键）照实放行并原样返回取证解析的答案，闸门只管跨族；而
       三个键全缺时不能放行——``resolve_script_kind`` 会按 ``content_mode`` 合成一个族内答案，

@@ -63,6 +63,8 @@ export interface ReferenceVideoUnit {
   /** Planning duration in seconds — provider request duration is resolved during precheck. */
   duration_seconds: number;
   note: string | null;
+  /** 混合模式首帧资产（项目内图片路径）；null/缺席 = 走参考路线。仅 mixed 项目可设值。 */
+  first_frame_asset?: string | null;
   /** 尚未生成过任何产物的单元不带这一节——后端只在生成时写入，故读侧一律按可能缺席处理。 */
   generated_assets?: UnitGeneratedAssets;
   /** Problem shell or mixed-speech marker; generation is blocked until repaired. */

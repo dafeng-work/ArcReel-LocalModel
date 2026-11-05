@@ -398,3 +398,34 @@ async def test_reference_admission_is_identical_for_tts_and_post_production_proj
     assert use_tts == post_production
     assert use_tts["decision"] == BatchAdmissionDecision.CONFIRMATION_REQUIRED.value
     assert [unit["request_duration_seconds"] for unit in use_tts["units"]] == [8, 4]
+
+
+async def test_mixed_mode_refuses_the_whole_batch_before_any_state_probe(monkeypatch, tmp_path: Path):
+    """混合模式逐单元定桶，批量无法给一致结论：整批在 admission 层结构化拒绝，任务不创建。"""
+    probes = _stub_state(monkeypatch)
+    projected: list[str] = []
+
+    async def _project(**kwargs):
+        projected.append(kwargs["unit"]["unit_id"])
+        raise AssertionError("mixed mode must not project any unit")
+
+    monkeypatch.setattr(admission_mod, "project_reference_unit_request", _project)
+
+    admission = await admit_reference_video_batch(
+        project_name="demo",
+        project={"generation_mode": "mixed"},
+        project_path=tmp_path,
+        script={"video_units": []},
+        script_file="episode_1.json",
+        units=[{"unit_id": "E1U1", "text": "镜头一"}, {"unit_id": "E1U2", "text": "镜头二"}],
+        request_options=ReferenceRequestOptions(),
+        operation="generate_videos",
+        selection=GenerationSelectionMode.MISSING_ONLY,
+    )
+    assert projected == []
+    assert probes == []
+    assert admission.decision is BatchAdmissionDecision.BLOCKED
+    assert [ticket.unit_id for ticket in admission.tickets] == ["E1U1", "E1U2"]
+    for ticket in admission.tickets:
+        assert ticket.problems[0].code == GenerationProblemCode.MIXED_MODE_BATCH_NOT_SUPPORTED
+        assert ticket.problems[0].action is GenerationAction.FIX_INPUT

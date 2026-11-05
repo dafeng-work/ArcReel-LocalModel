@@ -36,7 +36,7 @@ from lib.i18n.display_names import DisplayNames
 from lib.infra.api_errors import ApiError, BadRequestError, NotFoundError
 from lib.infra.path_safety import PathTraversalError, safe_join
 from lib.project.project_change_hints import project_change_source
-from lib.project.project_manager import get_project_manager, is_reference_video_project
+from lib.project.project_manager import get_project_manager, is_reference_family_project
 from lib.project.resource_paths import resource_relative_path
 from lib.script.reference_video.request_projection import (
     ReferenceRequestFactsLookup,
@@ -150,7 +150,7 @@ def _load_episode_script(project_name: str, episode: int, _t: Translator) -> tup
         script = get_project_manager().load_script(project_name, script_file)
     except FileNotFoundError as exc:
         raise NotFoundError("script_not_found", name=script_file) from exc
-    if not is_reference_video_project(project):
+    if not is_reference_family_project(project):
         raise HTTPException(status_code=409, detail=_t("ref_not_reference_video_mode"))
     return project, script, script_file
 
@@ -314,6 +314,8 @@ class PatchUnitRequest(BaseModel):
     prompt: str | None = None
     duration_seconds: int | None = Field(default=None, ge=1)
     note: str | None = None
+    # 混合模式单元的首帧（项目相对路径）；空串 = 清除。非混合模式设置即 400。
+    first_frame_asset: str | None = None
 
 
 def _find_unit(script: dict, unit_id: str, _t: Translator) -> dict:
@@ -337,7 +339,13 @@ async def patch_unit(
 ) -> dict[str, Any]:
     project, current, script_file = _load_episode_script(project_name, episode, _t)
     _find_unit(current, unit_id, _t)
+    if req.first_frame_asset is not None and project.get("generation_mode") != "mixed":
+        raise BadRequestError("first_frame_asset_requires_mixed_mode").with_diagnostic(
+            "first_frame_asset_requires_mixed_mode"
+        )
     fields: dict[str, Any] = {}
+    if req.first_frame_asset is not None:
+        fields["first_frame_asset"] = req.first_frame_asset.strip() or None
     if req.prompt is not None:
         fields["text"] = req.prompt
     if req.duration_seconds is not None:

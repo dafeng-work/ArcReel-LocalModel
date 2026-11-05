@@ -16,6 +16,8 @@ interface PatchUnitPayload {
   prompt?: string;
   duration_seconds?: number;
   note?: string | null;
+  /** 混合模式首帧资产；空串 = 清除（mixed 语义）。 */
+  first_frame_asset?: string;
 }
 
 /** Cache key isolating units per (project, episode) — switching projects with

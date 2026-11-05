@@ -100,9 +100,16 @@ def build_reference_video_visual_basis(
     reference_audio_speakers: Sequence[str] = (),
     reference_audio_targets: Sequence[int] | None = None,
     request_context: Mapping[str, object] | None = None,
+    first_frame: Path | None = None,
 ) -> ArtifactBasis:
     """Describe the exact projected reference request and its prompt-affecting inputs."""
 
+    files: list[tuple[str, Path]] = [
+        *((f"reference_image_{index}", path) for index, path in enumerate(reference_images)),
+        *((f"reference_audio_{index}", path) for index, path in enumerate(reference_audio_files)),
+    ]
+    if first_frame is not None:
+        files.append(("first_frame", first_frame))
     return _build_video_visual_basis(
         "reference",
         semantics={
@@ -113,10 +120,7 @@ def build_reference_video_visual_basis(
             "reference_audio_targets": list(reference_audio_targets) if reference_audio_targets is not None else None,
             "request_context": dict(request_context or {}),
         },
-        files=[
-            *((f"reference_image_{index}", path) for index, path in enumerate(reference_images)),
-            *((f"reference_audio_{index}", path) for index, path in enumerate(reference_audio_files)),
-        ],
+        files=files,
     )
 
 

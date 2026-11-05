@@ -135,7 +135,7 @@ from lib.project.asset_merge import (
     AssetMergeReport,
 )
 from lib.project.asset_types import ASSET_SPECS
-from lib.project.project_manager import ProjectManager, is_reference_video_project
+from lib.project.project_manager import ProjectManager, is_reference_family_project
 from lib.project.project_migration_failure import (
     MigrationFailureRecord,
     ProjectMigrationError,
@@ -968,7 +968,7 @@ async def generate_script_plan(
             text_request.episode,
             text_request.source,
         )
-        if is_reference_video_project(project):
+        if is_reference_family_project(project):
             handler, task_type = generate_reference_script_plan, _TEXT_REFERENCE_SCRIPT_PLAN
         elif content_mode == "narration":
             handler, task_type = generate_narration_script_plan, _TEXT_NARRATION_SCRIPT_PLAN
@@ -1635,8 +1635,9 @@ class CreateProjectToolRequest(BaseModel):
     content_mode: ContentMode = Field(
         default="narration", description="内容模式：narration 说书解说、drama 剧集、ad 广告/短片"
     )
-    generation_mode: Literal["storyboard", "reference_video"] = Field(
-        default="storyboard", description="生成模式：storyboard 先出分镜图再生视频、reference_video 参考图直接生视频"
+    generation_mode: Literal["storyboard", "reference_video", "mixed"] = Field(
+        default="storyboard",
+        description="生成模式：storyboard 先出分镜图再生视频、reference_video 参考图直接生视频、mixed 混合模式（单元逐个自选首帧/参考路线，仅支持逐单元生成）",
     )
     grid_storyboard: bool = Field(default=False, description="是否使用宫格分镜；广告/短片项目不支持")
     aspect_ratio: str = Field(default="9:16", description="画面比例，如 9:16、16:9")

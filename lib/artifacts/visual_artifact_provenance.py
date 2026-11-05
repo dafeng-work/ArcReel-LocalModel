@@ -431,9 +431,9 @@ def build_reference_video_artifact_visual_basis(
     references = [
         VisualReference(
             path=asset.path,
-            role="reference_image",
-            logical_type=asset.reference.type,
-            logical_id=asset.reference.name,
+            role="first_frame" if asset.kind == "first_frame" else "reference_image",
+            logical_type="unit" if asset.kind == "first_frame" else asset.reference.type,
+            logical_id=unit_id if asset.kind == "first_frame" else asset.reference.name,
             kind=asset.kind,
         )
         for asset in request_assets

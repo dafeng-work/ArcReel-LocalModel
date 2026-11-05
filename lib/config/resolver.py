@@ -250,9 +250,12 @@ VIDEO_BUCKET_BY_TASK_TYPE: dict[str, VideoGenerationType] = {
 #: 已成形任务的 task_type 定桶，读侧（能力查询 / 时长约束收窄等）在任务成形前只有项目的
 #: generation_mode，按它定同一个桶，两侧因此回答同一个「当前配置真正会执行的模型」。
 #: 参考生视频项目中无参考图分镜的降级（→ i2v）不经本表，见 ``lib.script.reference_video.units``。
+#: ``mixed`` 无单桶真相：逐单元桶由执行器按首帧可用性定（``reference_video_bucket``），本表给
+#: 的是模式级**代表桶** r2v（参考家族代表，供无单元上下文的标量读侧回退）。
 VIDEO_BUCKET_BY_GENERATION_MODE: dict[str, VideoGenerationType] = {
     "storyboard": "i2v",
     "reference_video": "r2v",
+    "mixed": "r2v",
 }
 
 #: 表外 generation_mode（无项目上下文与脏数据）落的桶。project.json 是明文文件，生成模式字段

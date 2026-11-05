@@ -19,7 +19,7 @@ from lib.infra.text_utils import normalize_newlines
 from lib.speech.speech_rate import project_speech_rate_override, speech_rate_units_per_second
 
 _STRUCTURED_CONTENT_MODES = frozenset({"narration", "drama"})
-_GENERATION_MODES = frozenset({"storyboard", "reference_video"})
+_GENERATION_MODES = frozenset({"storyboard", "reference_video", "mixed"})
 _DEFAULT_SOURCE_LANGUAGE = "中文"
 _AD_OVERVIEW_FIELDS = ("synopsis", "genre", "theme")
 

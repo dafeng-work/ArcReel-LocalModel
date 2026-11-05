@@ -32,7 +32,7 @@ class CurrentReferenceAssets:
         self._resolver: ArtifactCurrencyResolver = active_artifact_currency_resolver(project_path, project)
 
     def _claim_for(self, asset: ResolvedReferenceAsset) -> ArtifactInputClaim | None:
-        if asset.kind == "original":
+        if asset.kind in ("original", "first_frame"):
             return None
         try:
             artifact_path = asset.path.relative_to(self._project_path).as_posix()
