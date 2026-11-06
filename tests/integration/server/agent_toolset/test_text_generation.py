@@ -1380,6 +1380,100 @@ async def test_get_video_capabilities_annotates_each_formal_unit(
     assert units["E1U2"]["problems"] == []
 
 
+async def test_get_video_capabilities_annotates_each_formal_unit_for_mixed(
+    fake_ctx: ToolHarness, set_video_request_facts
+) -> None:
+    """混合模式同属参考家族：Agent 的能力查询要给出逐单元定桶结论，不能只给项目级数字。
+
+    漏判 mixed 时这段标注整体缺席，外部 Agent 拿不到「这个单元走首帧还是走参考」，
+    逐单元自选路线的能力在 Agent 侧等于没有。
+    """
+    set_video_request_facts(
+        {
+            "i2v": make_video_request_facts(
+                route="reference_video", generation_type="i2v", supported_durations=(5, 10), allowed_durations=(5, 10)
+            ),
+            "r2v": make_video_request_facts(
+                route="reference_video", generation_type="r2v", supported_durations=(4, 6, 8), allowed_durations=(8,)
+            ),
+        }
+    )
+    fake_ctx.pm.project_payload["generation_mode"] = "mixed"
+    fake_ctx.pm.script_payload = {
+        "episode": 1,
+        "content_mode": "narration",
+        "generation_mode": "mixed",
+        "video_units": [
+            {"unit_id": "E1U1", "text": "镜头1：@[张三] 推门", "duration_seconds": 8},
+            {"unit_id": "E1U2", "text": "镜头2：空镜", "duration_seconds": 8},
+        ],
+    }
+    use_fake_caps(
+        fake_ctx,
+        provider_id="gemini-aistudio",
+        model="veo-3.1-generate-preview",
+        supported_durations=[4, 6, 8],
+        generation_mode="mixed",
+    )
+    fake_ctx.pm.mirror_to_disk()
+
+    out = await run_declared_tool(GET_VIDEO_CAPABILITIES, fake_ctx, {})
+
+    assert out.problem is None, out
+    units = _as_json(out.value)["reference_unit_durations"]["units"]
+    assert set(units) == {"E1U1", "E1U2"}
+    assert (units["E1U1"]["declared_capability"], units["E1U1"]["hydrated_capability"]) == ("r2v", "i2v")
+    assert units["E1U2"]["hydrated_capability"] == "i2v"
+
+
+async def test_get_video_capabilities_routes_mixed_unit_by_first_frame(
+    fake_ctx: ToolHarness, set_video_request_facts
+) -> None:
+    """混合模式逐单元定桶在能力面上要看得见：首帧可用的单元落 i2v。"""
+    set_video_request_facts(
+        {
+            "i2v": make_video_request_facts(
+                route="reference_video", generation_type="i2v", supported_durations=(5, 10), allowed_durations=(5, 10)
+            ),
+            "r2v": make_video_request_facts(
+                route="reference_video", generation_type="r2v", supported_durations=(4, 6, 8), allowed_durations=(8,)
+            ),
+        }
+    )
+    fake_ctx.pm.project_payload["generation_mode"] = "mixed"
+    (fake_ctx.project_path / "first_frame.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    fake_ctx.pm.script_payload = {
+        "episode": 1,
+        "content_mode": "narration",
+        "generation_mode": "mixed",
+        "video_units": [
+            {
+                "unit_id": "E1U1",
+                "text": "镜头1：静图起幅",
+                "duration_seconds": 8,
+                "first_frame_asset": "first_frame.png",
+            },
+            {"unit_id": "E1U2", "text": "镜头2：空镜", "duration_seconds": 8},
+        ],
+    }
+    use_fake_caps(
+        fake_ctx,
+        provider_id="gemini-aistudio",
+        model="veo-3.1-generate-preview",
+        supported_durations=[4, 6, 8],
+        generation_mode="mixed",
+    )
+    fake_ctx.pm.mirror_to_disk()
+
+    out = await run_declared_tool(GET_VIDEO_CAPABILITIES, fake_ctx, {})
+
+    assert out.problem is None, out
+    units = _as_json(out.value)["reference_unit_durations"]["units"]
+    assert units["E1U1"]["hydrated_capability"] == "i2v"
+    assert units["E1U1"]["first_frame"] == "first_frame.png"
+    assert units["E1U2"]["hydrated_capability"] == "i2v"
+
+
 # ---------------------------------------------------------------------------
 # 输出截断：脚本规划与提示词编写落到同一个问题码
 # ---------------------------------------------------------------------------

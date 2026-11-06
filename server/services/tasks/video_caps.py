@@ -88,7 +88,7 @@ def reference_script_units(projects: ProjectManager, project_name: str, project:
     只读取、不回写存量迁移。剧本文件缺失的分集跳过：那是分集尚未产出剧本，不是能力问题；读不出
     或解析不了的分集同样跳过并记日志，单集损坏不拖垮整份能力查询。
     """
-    if project.get("generation_mode") != "reference_video":
+    if not is_reference_family_project(project):
         return []
     units: list[dict] = []
     for episode in project.get("episodes") or []:
@@ -166,7 +166,7 @@ async def annotate_reference_unit_tiers(
     of every formal unit, keyed by ``unit_id``; ad projects do not use this
     duration enumeration.
     """
-    if payload.get("generation_mode") != "reference_video" or payload.get("content_mode") == "ad":
+    if not is_reference_family_project(payload) or payload.get("content_mode") == "ad":
         return
     durations = [int(d) for d in payload.get("supported_durations") or []]
     if not durations and not payload.get("duration_endpoint_fixed"):

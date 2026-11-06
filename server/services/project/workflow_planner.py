@@ -23,6 +23,7 @@ from lib.generation.generation_result import (
 )
 from lib.infra.env_preflight import DEFAULT_CURRENT_ENV_PATH, read_current_host_env
 from lib.project.asset_types import ASSET_SPECS
+from lib.project.generation_modes import is_reference_family_generation_mode
 from lib.project.project_manager import ProjectManager, get_project_manager
 from lib.project.project_migration_failure import (
     MIGRATION_FAILURE_CODE,
@@ -218,7 +219,7 @@ class WorkflowPlanner:
             if status.project.content_mode != "ad":
                 script_plan_type = (
                     "text_reference_script_plan"
-                    if status.project.generation_mode == "reference_video"
+                    if is_reference_family_generation_mode(status.project.generation_mode)
                     else f"text_{status.project.content_mode}_script_plan"
                 )
                 text_queries.append((script_plan_type, episode_ids))
@@ -259,7 +260,9 @@ class WorkflowPlanner:
                 for item in facts.items
                 if isinstance(item.get(id_field), str) and str(item[id_field])
             ]
-            task_types = ["reference_video" if status.project.generation_mode == "reference_video" else "video"]
+            task_types = [
+                "reference_video" if is_reference_family_generation_mode(status.project.generation_mode) else "video"
+            ]
             if status.project.generation_mode == "storyboard":
                 if status.project.grid_storyboard:
                     grids_dir = facts.project_path / "grids"
@@ -334,7 +337,7 @@ class WorkflowPlanner:
     ) -> dict[str, Any] | None:
         """预告这一批真提交时的准入结论；正在生成的单元与 Web 批量入口一样不算目标，不作为在途冲突报出。"""
 
-        if status.project.generation_mode == "reference_video":
+        if is_reference_family_generation_mode(status.project.generation_mode):
             units = facts.script.get("video_units")
             if isinstance(units, list):
                 units = [unit for unit in units if not (isinstance(unit, dict) and unit.get("unit_id") in in_flight)]

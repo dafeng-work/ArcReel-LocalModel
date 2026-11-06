@@ -16,6 +16,7 @@ from collections.abc import Collection, Mapping
 
 from lib.infra.schema_guards import is_int
 from lib.infra.text_metrics import reading_unit_noun
+from lib.project.generation_modes import is_reference_family_generation_mode
 from lib.prompts.prompt_builders_script import (
     _format_aspect_ratio_desc,
     _neutralize_tags,
@@ -74,8 +75,8 @@ def _format_products(products: dict) -> str:
 
 def _shot_duration_constraint(generation_mode: str | None, supported_durations: list[int] | None) -> str:
     """渲染分镜图生视频的单分镜时长约束；参考生视频须走自包含 unit 构建器。"""
-    if generation_mode == "reference_video":
-        raise ValueError("reference_video 路径须使用 build_ad_reference_prompt")
+    if is_reference_family_generation_mode(generation_mode):
+        raise ValueError("参考家族路径（reference_video / mixed）须使用 build_ad_reference_prompt")
     if not supported_durations:
         raise ValueError("storyboard 路径必须提供 supported_durations（视频模型的合法时长集合）")
     return format_duration_constraint(supported_durations, None)

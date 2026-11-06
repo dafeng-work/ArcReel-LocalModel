@@ -100,6 +100,10 @@ from lib.project.asset_types import (
     resolve_asset_key,
     validate_asset_name,
 )
+from lib.project.generation_modes import (
+    VALID_GENERATION_MODES,
+    is_reference_family_generation_mode,
+)
 from lib.project.project_change_hints import emit_project_change_hint
 from lib.project.project_schema import parse_project_schema_version
 from lib.project.script_entry_cleanup import purge_replaced_entry_media
@@ -128,8 +132,6 @@ PROJECT_SLUG_SANITIZER = re.compile(r"[^a-zA-Z0-9]+")
 # mixed（混合模式），mixed 为单向汇点、不可转出（docs/adr/0099）。
 # 宫格不是生成模式：它由独立的 grid_storyboard 布尔表达，仅 `storyboard` 生成模式有意义。
 # 存量三值 "grid" 已由 v4→v5 迁移重编码为 storyboard + grid_storyboard=true。
-VALID_GENERATION_MODES: frozenset[str] = frozenset({"storyboard", "reference_video", "mixed"})
-_REFERENCE_FAMILY_MODES: frozenset[str] = frozenset({"reference_video", "mixed"})
 _DEFAULT_GENERATION_MODE = "storyboard"
 
 
@@ -239,7 +241,7 @@ def is_reference_family_project(project: Mapping[str, Any]) -> bool:
     自选首帧 / 参考路线；凡「走参考管线」语义的消费方用本判据，需严格区分两种模式的
     判据（批量闸、首帧字段生效范围）继续用 ``generation_mode`` 原值。
     """
-    return project.get("generation_mode") in _REFERENCE_FAMILY_MODES
+    return is_reference_family_generation_mode(project.get("generation_mode"))
 
 
 def validate_generation_mode_transition(current: object, new: object) -> None:

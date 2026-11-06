@@ -29,6 +29,7 @@ from typing import Any
 
 from arcreel_market_core.validation_messages import MessageRef, ValidationMessage
 from lib.infra.validation_messages import default_translate
+from lib.project.generation_modes import is_reference_family_generation_mode
 
 logger = logging.getLogger(__name__)
 
@@ -230,7 +231,9 @@ class SkeletonRouteMismatchError(ValueError):
         guidance = "reference" if expected == _REFERENCE_ROUTE_SKELETON else "storyboard"
         params: dict[str, Any] = {
             "route": MessageRef(
-                "val_route_reference_video" if generation_mode == "reference_video" else "val_route_storyboard"
+                "val_route_reference_video"
+                if is_reference_family_generation_mode(generation_mode)
+                else "val_route_storyboard"
             ),
             "expected": expected,
             "expected_noun": MessageRef(f"val_skeleton_noun_{expected}"),

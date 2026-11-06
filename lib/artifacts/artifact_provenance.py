@@ -16,6 +16,7 @@ from lib.episode.episode_target_duration import project_episode_target_duration
 from lib.episode.source_kinds import DEFAULT_SOURCE_KIND, episode_source_kind
 from lib.infra.text_metrics import reading_unit_noun
 from lib.infra.text_utils import normalize_newlines
+from lib.project.generation_modes import is_reference_family_generation_mode
 from lib.speech.speech_rate import project_speech_rate_override, speech_rate_units_per_second
 
 _STRUCTURED_CONTENT_MODES = frozenset({"narration", "drama"})
@@ -196,7 +197,7 @@ def _freeze_script_plan_prompt_inputs(
     frozen = dict(prompt_inputs)
     for field in ("characters", "scenes", "props"):
         raw_assets = _mapping_or_empty(prompt_inputs.get(field))
-        if generation_mode == "reference_video":
+        if is_reference_family_generation_mode(generation_mode):
             frozen[field] = [
                 {
                     "name": name,
@@ -218,7 +219,7 @@ def _freeze_script_plan_prompt_inputs(
         )
         frozen["reading_unit_noun"] = reading_unit_noun(source_language)
 
-    if generation_mode == "reference_video":
+    if is_reference_family_generation_mode(generation_mode):
         for field in ("episode_outline", "next_episode_outline"):
             frozen[field] = _freeze_reference_outline(prompt_inputs.get(field))
 
@@ -227,7 +228,7 @@ def _freeze_script_plan_prompt_inputs(
     # 才进 basis——那时提示词确实变了，冻结的基线就该失效。
     if frozen.get("episode_target_duration") is None:
         frozen.pop("episode_target_duration", None)
-    if generation_mode == "reference_video" and frozen.get("source_kind") is None:
+    if is_reference_family_generation_mode(generation_mode) and frozen.get("source_kind") is None:
         frozen.pop("source_kind", None)
     return frozen
 
@@ -251,7 +252,7 @@ def _freeze_reference_outline(value: object) -> dict[str, object] | None:
 
 
 def _script_plan_prompt_variant(content_mode: str, generation_mode: str) -> ScriptPlanPromptVariant:
-    if generation_mode == "reference_video":
+    if is_reference_family_generation_mode(generation_mode):
         return "reference_video"
     if content_mode == "drama":
         return "drama"
@@ -417,7 +418,7 @@ def _project_prompt_authoring_assets(value: object, *, generation_mode: str) -> 
             raise ValueError("episode script asset names must be strings")
         data = raw if isinstance(raw, Mapping) else {}
         description = data.get("description")
-        if generation_mode == "reference_video":
+        if is_reference_family_generation_mode(generation_mode):
             rendered_description: object = description if "description" in data else ""
         else:
             rendered_description = description.strip() if isinstance(description, str) and description.strip() else ""

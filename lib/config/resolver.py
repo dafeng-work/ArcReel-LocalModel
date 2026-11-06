@@ -44,6 +44,7 @@ from lib.custom_provider import is_custom_provider, parse_provider_id
 from lib.db.repositories.credential_repository import CredentialRepository
 from lib.db.repositories.custom_provider_repo import CustomProviderRepository
 from lib.episode.episode_target_duration import project_episode_target_duration
+from lib.project.generation_modes import is_reference_family_generation_mode
 from lib.project.project_manager import get_project_manager
 from lib.speech.character_voice import CharacterVoiceBinding, character_voice_binding
 
@@ -445,7 +446,7 @@ def derive_voice_consistency(
     """
     if (
         reference_audio_mode == "direct"
-        and generation_mode == "reference_video"
+        and is_reference_family_generation_mode(generation_mode)
         and character_voice_binding == "reference_audio"
     ):
         return "native"

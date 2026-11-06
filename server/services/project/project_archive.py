@@ -42,7 +42,7 @@ from lib.infra.validation_messages import ValidationResult, default_translate
 from lib.project.asset_types import ASSET_SPECS, asset_name_comparison_key, normalize_asset_name
 from lib.project.data_validator import DataValidator
 from lib.project.project_change_hints import emit_project_change_hint
-from lib.project.project_manager import ProjectManager
+from lib.project.project_manager import ProjectManager, is_reference_family_project
 from lib.project.project_migrations.runner import migrate_project_dir
 from lib.project.project_migrations.v1_to_v2_normalize_providers import (
     migrate_project_dict as normalize_legacy_providers,
@@ -274,7 +274,7 @@ def _registry_supported_durations(project: dict[str, Any]) -> list[int] | None:
     取不到视频请求事实，这份全集只用于给存量 per-shot 时长收编取档。参考生视频项目的单元按
     可用参考图落 r2v 或 i2v，取两桶声明全集的并集，任一桶查不到时为 None，与在线内容确认同口径。
     """
-    if project.get("generation_mode") != "reference_video":
+    if not is_reference_family_project(project):
         return _registry_bucket_durations(project)
     with_references = _registry_bucket_durations(project, "r2v")
     without_references = _registry_bucket_durations(project, "i2v")

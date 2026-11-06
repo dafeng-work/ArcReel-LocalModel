@@ -60,6 +60,7 @@ from lib.infra.async_thread import run_sync_transaction
 from lib.infra.content_digest import sha256_file
 from lib.infra.text_utils import strip_json_code_fences
 from lib.project.asset_types import asset_name_comparison_key
+from lib.project.generation_modes import is_reference_family_generation_mode
 from lib.project.project_manager import ProjectManager, ScriptWriteConflict
 from lib.prompts.prompt_builders_ad import (
     build_ad_prompt,
@@ -696,7 +697,7 @@ class ScriptGenerator:
         gen_mode = self.generation_mode
         if self.content_mode == "ad":
             raise ValueError("广告/短片项目没有脚本规划步骤，不适用内容确认转换")
-        if gen_mode == "reference_video":
+        if is_reference_family_generation_mode(gen_mode):
             facts = await self._fetch_video_request_facts()
             units = await run_sync_transaction(
                 self._load_reference_script_plan, episode, self._reference_migration_durations(facts)
@@ -890,7 +891,7 @@ class ScriptGenerator:
             )
         )
         response_text = result.text
-        if self.generation_mode == "reference_video":
+        if is_reference_family_generation_mode(self.generation_mode):
             script_data, new_assets = self._parse_ad_reference_response(response_text, episode)
         else:
             script_data, new_assets = self._parse_ad_storyboard_response(response_text, episode)
@@ -978,7 +979,7 @@ class ScriptGenerator:
         reference 路径不消费供应商能力（unit 编排时长不按供应商档位量化），跳过能力查询；
         storyboard 路径解析一次 supported_durations，prompt 时长枚举与 schema enum 同源。
         """
-        if gen_mode == "reference_video":
+        if is_reference_family_generation_mode(gen_mode):
             supported = None
             schema: type = AdReferenceFlatScript
         else:
@@ -1004,7 +1005,7 @@ class ScriptGenerator:
                 for key in ("characters", "scenes", "props")
             },
         }
-        if gen_mode == "reference_video":
+        if is_reference_family_generation_mode(gen_mode):
             return build_ad_reference_prompt(**common)
         return build_ad_prompt(
             **common,
@@ -1084,7 +1085,7 @@ class ScriptGenerator:
         resolver = self.config_resolver or ConfigResolver(async_session_factory)
         route: VideoRoute
         buckets: tuple[VideoGenerationType, ...]
-        if self.generation_mode == "reference_video":
+        if is_reference_family_generation_mode(self.generation_mode):
             route, buckets = "reference_video", ("r2v", "i2v")
         else:
             route, buckets = "storyboard", (self._storyboard_bucket,)
