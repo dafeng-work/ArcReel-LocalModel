@@ -27,6 +27,7 @@ from lib.script.reference_video.request_projection import (
     clamp_reference_assets,
     hydrate_reference_assets,
     resolve_reference_assets,
+    resolve_unit_first_frame,
     unit_reference_declarations,
 )
 from lib.speech.narration_delivery import TtsSynthesisSettings, build_narration_audio_basis
@@ -803,6 +804,72 @@ def _reference_video_basis(project_path: Path, project: dict, script: dict, meta
         resource_id="E1U1",
         version_metadata=metadata,
     )
+
+
+def test_mixed_first_frame_video_goes_stale_when_the_first_frame_changes(tmp_path: Path) -> None:
+    """混合模式首帧单元：首帧进视觉摘要，改首帧就让既有视频判 stale。
+
+    时效路径若重建不出带首帧的同一份基线，首帧变更不会让既有视频失效、刚出的片
+    反被判 stale。
+    """
+    project_path = tmp_path / "demo"
+    frame = project_path / "scenes" / "bedroom.png"
+    frame.parent.mkdir(parents=True)
+    frame.write_bytes(b"frame-one")
+    project = {
+        "content_mode": "drama",
+        "generation_mode": "mixed",
+        "aspect_ratio": {"videos": "9:16"},
+        "characters": {},
+    }
+    unit = {
+        "unit_id": "E1U1",
+        "duration_seconds": 4,
+        "text": "画面：空镜。",
+        "first_frame_asset": "scenes/bedroom.png",
+        "generated_assets": {"video_clip": "reference_videos/E1U1.mp4", "status": "completed"},
+    }
+    script = {"content_mode": "drama", "episode": 1, "video_units": [unit]}
+
+    first_frame = resolve_unit_first_frame(project, unit, project_path)
+    assert first_frame is not None
+    visual = build_reference_video_artifact_visual_basis(
+        unit=unit,
+        request_assets=(first_frame,),
+        style=None,
+        aspect_ratio="9:16",
+    )
+    speech = build_video_speech_basis(
+        admit_script_unit("video_units", unit).preparation,
+        voices=[],
+    )
+    duration = build_video_duration_basis(4)
+    currency = VideoArtifactCurrencyFacts(
+        episode=1,
+        request_duration_seconds=4,
+        visual_basis=visual,
+        speech_basis=speech,
+        duration_basis=duration,
+        video_basis=compose_video_artifact_basis(visual=visual, speech=speech, duration=duration),
+        voice_style_speakers=(),
+        duration_tiers=(4, 8),
+        reference_image_limit=None,
+        parent_version=0,
+    )
+    metadata: dict[str, object] = {
+        "artifact_video_currency": currency.to_dict(),
+        "execution_script_file": "episode_1.json",
+        "execution_provider_media": [],
+    }
+
+    current = _reference_video_basis(project_path, project, script, metadata)
+    assert current is not None, "首帧未变的 mixed 单元不该判 stale"
+    assert current.digest == currency.video_descriptor.digest, "首帧未变时重建出的基线应与冻结的执行事实一致"
+
+    frame.write_bytes(b"frame-two")
+    changed = _reference_video_basis(project_path, project, script, metadata)
+    assert changed is not None
+    assert changed.digest != currency.video_descriptor.digest, "首帧换图后既有视频应判 stale"
 
 
 def test_switching_to_prompt_voice_binding_makes_a_reference_video_stale(tmp_path: Path) -> None:

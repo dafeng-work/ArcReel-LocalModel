@@ -259,7 +259,10 @@ def _reference_evidence_is_valid(value: object) -> bool:
     return (
         set(value) <= allowed
         and {"role", "sha256", "logical_identity"} <= set(value)
-        and value["role"] == "reference_image"
+        # 混合模式的首帧（role=first_frame）与参考图（role=reference_image）同属参考路线的
+        # 请求证据：首帧模式下参考图不发，请求里只剩首帧这一条图证据。只认 reference_image
+        # 会把 mixed 首帧单元的视觉基线判成非法，任务在入队前就失败（首帧路线根本跑不出片）。
+        and value["role"] in ("reference_image", "first_frame")
         and isinstance(value["sha256"], str)
         and CONTENT_DIGEST_RE.fullmatch(value["sha256"]) is not None
         and isinstance(identity, Mapping)

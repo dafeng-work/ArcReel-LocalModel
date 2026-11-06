@@ -199,3 +199,26 @@ def test_video_artifact_currency_rejects_empty_or_non_string_style_description(d
     """描述为空时依据不记该键；空串或非字符串不是构造函数能写出的形态。"""
     with pytest.raises(ValueError, match="reference visual basis has invalid canonical inputs"):
         _reference_facts({**_REFERENCE_VISUAL_INPUTS, "style_description": description})
+
+
+def test_video_artifact_currency_accepts_mixed_first_frame_evidence() -> None:
+    """混合模式首帧单元的请求证据里只有首帧（role=first_frame），基线自证照常通过。
+
+    首帧模式下参考图不发，请求里只剩首帧这一条图证据；校验器只认 reference_image
+    的话，mixed 首帧单元的任务会在入队前就失败（首帧路线根本跑不出片）。
+    """
+    facts = _reference_facts(
+        {
+            **_REFERENCE_VISUAL_INPUTS,
+            "request_references": [
+                {
+                    "role": "first_frame",
+                    "sha256": "a" * 64,
+                    "logical_identity": {"type": "unit", "id": "E1U1"},
+                    "kind": "first_frame",
+                }
+            ],
+        }
+    )
+
+    assert VideoArtifactCurrencyFacts.from_dict(facts.to_dict()) == facts

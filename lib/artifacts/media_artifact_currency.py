@@ -43,6 +43,7 @@ from lib.script.reference_video.request_projection import (
     clamp_reference_assets,
     hydrate_reference_assets,
     resolve_reference_assets,
+    resolve_unit_first_frame,
     unit_reference_declarations,
 )
 from lib.script.script_editor import resolve_items
@@ -185,9 +186,15 @@ def project_video_basis_components(
         hydration = hydrate_reference_assets(declared, resolved, FilesystemReferenceAssets(project_path))
         if hydration.missing:
             raise ValueError("declared reference assets are missing")
+        # 混合模式的首帧与执行路径同一口径：首帧可用时参考图不发，请求证据里只剩首帧。
+        # 时效路径若重建不出同一份基线，首帧变更不会让既有视频失效、刚出的片反被判 stale。
+        first_frame = resolve_unit_first_frame(project, item, project_path)
+        request_assets = clamp_reference_assets(hydration.available, shape.reference_image_limit)
+        if first_frame is not None:
+            request_assets = (first_frame,)
         visual = build_reference_video_artifact_visual_basis(
             unit=item,
-            request_assets=clamp_reference_assets(hydration.available, shape.reference_image_limit),
+            request_assets=request_assets,
             style=project.get("style") if isinstance(project.get("style"), str) else None,
             style_description=project_basis_style_description(project),
             aspect_ratio=resolve_video_aspect_ratio(project),
