@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from lib.generation.video_request_facts import VideoRequestFacts, VideoRequestFactsFailure
+from lib.config.resolver import video_bucket_for_generation_mode
+from lib.generation.video_request_facts import VideoRequestFacts
 from lib.project.project_schema import CURRENT_PROJECT_SCHEMA_VERSION
 from lib.script.reference_video.artifact_selection import CurrentReferenceAssets
 from lib.script.reference_video.request_projection import (
@@ -14,9 +15,8 @@ from lib.script.reference_video.request_projection import (
     ResolvedReferenceAsset,
     VideoRequestFactsResult,
 )
-from lib.config.resolver import video_bucket_for_generation_mode
-from lib.script.reference_video.units import reference_video_bucket, resolve_unit_video_bucket
 from lib.script.reference_video.unit_capabilities import evaluate_reference_unit_capabilities
+from lib.script.reference_video.units import reference_video_bucket, resolve_unit_video_bucket
 from lib.script.script_models import ReferenceResource
 from tests.factories import make_video_request_facts
 
@@ -93,7 +93,9 @@ async def _project_unit(project_path: Path, project: dict, unit: dict, facts: Vi
     ],
 )
 def test_reference_video_bucket_matrix(with_references: bool, first_frame_available: bool, expected: str) -> None:
-    assert reference_video_bucket(with_references=with_references, first_frame_available=first_frame_available) == expected
+    assert (
+        reference_video_bucket(with_references=with_references, first_frame_available=first_frame_available) == expected
+    )
 
 
 def test_reference_video_bucket_requires_keyword_arguments() -> None:
@@ -287,6 +289,7 @@ def test_mode_bucket_mapping_mixed_falls_back_to_r2v_representative():
 
 
 def test_resolve_unit_video_bucket_matrix(tmp_path):
+    """逐单元定桶矩阵：首帧优先 i2v；否则有参考图 r2v、无参考图降级 i2v（与投影层同口径）。"""
     project = tmp_path
     (project / "images").mkdir(parents=True)
     (project / "images" / "first.png").write_bytes(b"x")
@@ -294,9 +297,23 @@ def test_resolve_unit_video_bucket_matrix(tmp_path):
     unit_ff = {"unit_id": "E1U01", "first_frame_asset": "images/first.png"}
     unit_ff_missing = {"unit_id": "E1U02", "first_frame_asset": "images/nope.png"}
     unit_plain = {"unit_id": "E1U03"}
-    assert resolve_unit_video_bucket(mixed, unit_ff, project) == "i2v"
-    assert resolve_unit_video_bucket(mixed, unit_ff_missing, project) == "r2v"
-    assert resolve_unit_video_bucket(mixed, unit_plain, project) == "r2v"
-    assert resolve_unit_video_bucket({"generation_mode": "reference_video"}, unit_ff, project) == "r2v"
-    assert resolve_unit_video_bucket({"generation_mode": "storyboard"}, unit_ff, project) == "i2v"
-    assert resolve_unit_video_bucket({}, unit_ff, project) == "i2v"
+    # 首帧可用 → i2v（首帧优先，有无参考图都一样）
+    assert resolve_unit_video_bucket(mixed, unit_ff, project, with_references=False) == "i2v"
+    assert resolve_unit_video_bucket(mixed, unit_ff, project, with_references=True) == "i2v"
+    # 首帧不可用 → 按参考图事实：有参考图 r2v、无参考图降级 i2v
+    assert resolve_unit_video_bucket(mixed, unit_ff_missing, project, with_references=True) == "r2v"
+    assert resolve_unit_video_bucket(mixed, unit_ff_missing, project, with_references=False) == "i2v"
+    assert resolve_unit_video_bucket(mixed, unit_plain, project, with_references=True) == "r2v"
+    assert resolve_unit_video_bucket(mixed, unit_plain, project, with_references=False) == "i2v"
+    # 参考生视频模式保留既有降级行为
+    assert (
+        resolve_unit_video_bucket({"generation_mode": "reference_video"}, unit_ff, project, with_references=True)
+        == "r2v"
+    )
+    assert (
+        resolve_unit_video_bucket({"generation_mode": "reference_video"}, unit_ff, project, with_references=False)
+        == "i2v"
+    )
+    # 分镜与未知模式恒 i2v
+    assert resolve_unit_video_bucket({"generation_mode": "storyboard"}, unit_ff, project, with_references=True) == "i2v"
+    assert resolve_unit_video_bucket({}, unit_ff, project, with_references=True) == "i2v"

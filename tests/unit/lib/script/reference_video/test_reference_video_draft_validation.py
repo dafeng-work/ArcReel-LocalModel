@@ -434,12 +434,12 @@ class TestPoseContract:
 
     def test_drifted_skeleton_rejected(self):
         with pytest.raises(DraftViolation, match="姿态锁被破坏") as exc_info:
-            validate_pose_lock("unit E1U02", f"[接触 L4 · 侧卧体位 · 支撑：左肘] 其余正文……", self.MARK)
+            validate_pose_lock("unit E1U02", "[接触 L4 · 侧卧体位 · 支撑：左肘] 其余正文……", self.MARK)
         assert exc_info.value.code == "pose_lock_broken"
 
     def test_chain_reset_by_non_contact_unit(self):
         """非接触单元是 unit 边界：链重置后换骨架合法，不再判漂移。"""
-        assert validate_pose_lock("unit E1U03", f"[接触 L4 · 侧卧体位 · 支撑：左肘] 其余正文……", None) is None
+        assert validate_pose_lock("unit E1U03", "[接触 L4 · 侧卧体位 · 支撑：左肘] 其余正文……", None) is None
 
     def test_unmarked_unit_silent(self):
         assert validate_pose_lock("unit E1U02", "@[李明] 转身离开", self.MARK) is None
@@ -595,9 +595,7 @@ class TestRelationalWordCheckFlag:
 
     def test_plan_layer_skips_relational_check(self):
         """plan 侧（relational_word_check=False）：源文措辞含关系词不判违约。"""
-        validate_unit_text(
-            "unit E1U01", self.MARKED_RELATIONAL, PROJECT, max_refs=None, relational_word_check=False
-        )
+        validate_unit_text("unit E1U01", self.MARKED_RELATIONAL, PROJECT, max_refs=None, relational_word_check=False)
 
     def test_prompt_layer_enforces_relational_check(self):
         """prompt 侧（默认 True）：L4+ 单元正文命中黑名单词判违约。"""

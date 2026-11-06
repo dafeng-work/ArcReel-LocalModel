@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from lib.infra.path_safety import PathTraversalError, safe_join
@@ -38,31 +39,50 @@ def find_reference_unit(script: dict, unit_id: str) -> dict | None:
 
 
 def is_first_frame_available(unit: dict, project_path: Path) -> bool:
-    """单元首帧图是否可用：字段已声明且项目内相对路径存在（越界/绝对路径/空值判不可用）。
+    """单元首帧图是否可用：字段已声明且项目内的**普通文件**存在（越界/绝对路径/空值判不可用）。
 
     与投影侧 ``_candidate_path`` 同一 ``safe_join`` 判据：绝对路径按 os.path.join 语义丢前缀后
     仍须落在项目内。混合模式定桶与投影载荷 first_frame 因此共用这一可用性出口。
+
+    存在性判定用 ``is_file`` 而非 ``exists``：投影侧的资产适配器要求普通文件（``require_file``），
+    两处判据若一严一松，同一路径会在执行层判「有首帧」而在投影层判「缺失」，桶与阻断结论分裂。
     """
     asset = unit.get("first_frame_asset")
     if not isinstance(asset, str) or not asset:
         return False
     try:
-        candidate = safe_join(project_path, asset)
-    except (OSError, PathTraversalError, TypeError):
+        candidate = safe_join(project_path, asset, require_file=True)
+    except (OSError, PathTraversalError, TypeError, FileNotFoundError):
         return False
-    return candidate.exists()
+    return candidate.is_file()
 
 
-def resolve_unit_video_bucket(project: dict, unit: dict, project_path: Path) -> VideoGenerationType:
+def resolve_unit_video_bucket(
+    project: dict,
+    unit: dict,
+    project_path: Path,
+    *,
+    with_references: bool,
+) -> VideoGenerationType:
     """项目生成模式 + 单元事实 → 该单元执行要落的任务类型桶（读侧与执行侧共用的单元级入口）。
 
-    ``storyboard`` → i2v；``reference_video`` → r2v（无参考图的逐单元降级由执行器水合后按
-    ``reference_video_bucket`` 完成）；``mixed`` → 首帧已声明且文件可用时 i2v，否则 r2v。
-    未知模式落默认桶 i2v，与 ``video_bucket_for_generation_mode`` 同口径。
+    - ``storyboard`` → i2v；
+    - ``reference_video`` → 有可用参考图 r2v、无参考图 i2v（t2v 降级，既有行为：不送入
+      拒空参考的 r2v 桶模型）；
+    - ``mixed`` → 首帧可用 i2v（首帧优先，参考图不随请求发出），否则与参考生视频同规则；
+    - 未知模式落默认桶 i2v，与 ``video_bucket_for_generation_mode`` 同口径。
+
+    mixed 的落桶与投影层 ``hydrate_unit_references`` 的 hydrated 桶逐字同口径：读侧与执行侧
+    对同一单元必须给出同一个桶，否则 lane 事实解析会以 ``reference_capability_unavailable``
+    阻断一个本可生成的单元。
     """
     mode = project.get("generation_mode")
     if mode == "storyboard":
         return "i2v"
-    if mode == "mixed":
-        return "i2v" if is_first_frame_available(unit, project_path) else "r2v"
-    return "r2v" if mode == "reference_video" else "i2v"
+    if mode not in ("reference_video", "mixed"):
+        return "i2v"
+    first_frame_available = mode == "mixed" and is_first_frame_available(unit, project_path)
+    return reference_video_bucket(
+        with_references=with_references,
+        first_frame_available=first_frame_available,
+    )

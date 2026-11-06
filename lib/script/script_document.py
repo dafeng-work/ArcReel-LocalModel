@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from lib.episode.episode_ids import episode_title
+from lib.project.project_manager import is_reference_family_project
 from lib.script.script_models import PENDING_AUTHORING_FIELD
 from lib.script.script_plan_entries import ScriptPlanKind, plan_entry_content, plan_variant
 from lib.script.script_skeleton import resolve_declared_kind, resolve_kind_items, rewrite_episode_prefix
@@ -88,8 +89,9 @@ def finish_script_document(
     # 剧本不落盘任何生成模式标记——生成分派一律读项目生成模式。
     # 参考生视频剧本必须强制覆盖：ReferenceVideoScript.content_mode 有 Pydantic 默认值
     # "narration"，setdefault 拿不到项目级真值；非参考集 LLM 已在 schema 中产出
-    # narration/drama，setdefault 仅作 fallback。
-    if content_mode != "ad" and project.get("generation_mode") == "reference_video":
+    # narration/drama，setdefault 仅作 fallback。混合模式同属参考家族（video_units 骨架），
+    # 同样必须覆盖，否则 drama 项目会被静默标成 narration。
+    if content_mode != "ad" and is_reference_family_project(project):
         script_data["content_mode"] = content_mode
     else:
         script_data.setdefault("content_mode", content_mode)

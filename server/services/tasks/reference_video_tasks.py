@@ -64,7 +64,7 @@ from lib.script.reference_video.request_projection import (
     resolve_unit_first_frame,
     unit_reference_declarations,
 )
-from lib.script.reference_video.units import reference_video_bucket, resolve_unit_video_bucket
+from lib.script.reference_video.units import resolve_unit_video_bucket
 from lib.script.reference_video.voice_settings import VoiceRenderSettings
 from lib.script.script_editor import ScriptEditError
 from lib.script.script_models import ReferenceResource
@@ -334,16 +334,17 @@ async def execute_reference_video_task(
     #    查能力上限与 resolution。provider 身份解析收口于 GenerationContext
     #    （docs/adr/0049）——executor 不再触碰 MediaGenerator 私有属性、不再手工重建
     #    registry provider_id。桶按本 unit 解析后的实际首帧 / 参考图分流（docs/adr/0054）：
-    #    混合模式：首帧可用 → i2v（fl2va），无首帧恒 r2v（ref2va），无参考图也不降级 i2v；
-    #    参考生视频模式：有参考图 → r2v，无图的视频单元降级 → i2v，不送入拒空参考的 r2v 桶模型。
-    #    判据取解析结果而非声明，与 backend 的实际请求同源。
-    if project.get("generation_mode") == "mixed":
-        execution_generation_type = resolve_unit_video_bucket(project, unit, project_path)
-    else:
-        execution_generation_type = reference_video_bucket(
-            with_references=bool(hydration.available),
-            first_frame_available=first_frame is not None,
-        )
+    #    混合模式：首帧可用 → i2v（fl2va），首帧优先于参考图；无首帧则与参考生视频同规则
+    #    （有参考图 → r2v ref2va，无参考图降级 i2v t2v，不送入拒空参考的 r2v 桶模型）。
+    #    判据取解析结果而非声明，与 backend 的实际请求同源。mixed 的落桶与投影层
+    #    hydrate_unit_references 的 hydrated 桶同口径（首帧优先 i2v，否则有参考图 r2v、
+    #    无参考图降级 i2v）：读侧与执行侧对同一单元必须给出同一个桶。
+    execution_generation_type = resolve_unit_video_bucket(
+        project,
+        unit,
+        project_path,
+        with_references=bool(hydration.available),
+    )
     execution_payload = without_reference_video_execution_identity(payload)
     request_options = ReferenceRequestOptions.from_payload(payload, legacy_duration_confirmed=True)
     ctx = await resolve_generation_context(
@@ -380,7 +381,11 @@ async def execute_reference_video_task(
             return VideoRequestFactsFailure("reference_capability_unavailable", (("capability", generation_type),))
         return lane_request_facts
 
-    projection = await ReferenceUnitRequestProjector(_lane_request_facts, asset_availability).project_current(
+    # project_path 必须传入：混合模式首帧的水合（文件存在判定）以项目目录为边界，
+    # 缺它时投影侧把已声明的首帧判为缺失，mixed 带首帧的单元会被误阻断。
+    projection = await ReferenceUnitRequestProjector(
+        _lane_request_facts, asset_availability, project_path=project_path
+    ).project_current(
         project=project,
         script=script,
         unit=unit,
@@ -495,7 +500,8 @@ async def execute_reference_video_task(
                     logical_name=resource_id,
                     kind="first_frame",
                 ),
-            ) + image_inputs
+                *image_inputs,
+            )
         if reference_audio_targets is None:
             audio_names = rendered.audio_speakers
             audio_target_values: list[int | None] = [None] * len(reference_audio_files)
@@ -569,7 +575,7 @@ async def execute_reference_video_task(
                 replace(entry, path=path) for entry, path in zip(constrained_entries, provider_refs, strict=True)
             )
             if staged_first_frames and first_frame is not None:
-                staged_request_assets = staged_request_assets + (replace(first_frame, path=staged_first_frames[0]),)
+                staged_request_assets = (*staged_request_assets, replace(first_frame, path=staged_first_frames[0]))
             artifact_visual_basis = await asyncio.to_thread(
                 lambda: build_reference_video_artifact_visual_basis(
                     unit=unit,

@@ -32,7 +32,7 @@ from lib.generation.video_request_facts import (
     evaluate_video_request_facts,
     require_video_request_facts,
 )
-from lib.project.project_manager import ProjectManager
+from lib.project.project_manager import ProjectManager, is_reference_family_project
 from lib.script.reference_video.request_projection import (
     ReferenceRequestFactsLookup,
     configured_reference_request_facts,
@@ -137,11 +137,7 @@ async def capability_request_facts(
     ``resolution_override`` 只由设置页与创建向导的能力预览传入。求值失败抛
     :class:`~lib.generation.video_request_facts.VideoRequestFactsError`。
     """
-    route = (
-        "reference_video"
-        if generation_type == "r2v" or project.get("generation_mode") == "reference_video"
-        else "storyboard"
-    )
+    route = "reference_video" if generation_type == "r2v" or is_reference_family_project(project) else "storyboard"
     return require_video_request_facts(
         await evaluate_video_request_facts(
             project,
@@ -264,7 +260,7 @@ async def resolve_audio_switch_conflict(project: dict, generation_type: VideoGen
     try:
         result = await evaluate_video_request_facts(
             project,
-            route="reference_video" if project.get("generation_mode") == "reference_video" else "storyboard",
+            route="reference_video" if is_reference_family_project(project) else "storyboard",
             generation_type=generation_type,
             identity=CONFIGURED_VIDEO_IDENTITY,
             resolver=resolver,

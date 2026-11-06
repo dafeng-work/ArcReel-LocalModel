@@ -15,12 +15,12 @@ from lib.script.script_skeleton import ensure_route_skeleton, resolve_declared_k
 
 class TestModeValues:
     def test_valid_modes_exactly_three(self):
-        assert VALID_GENERATION_MODES == frozenset({"storyboard", "reference_video", "mixed"})
+        assert frozenset({"storyboard", "reference_video", "mixed"}) == VALID_GENERATION_MODES
 
     def test_data_validator_derives_from_same_set(self):
         from lib.project.data_validator import DataValidator
 
-        assert DataValidator.VALID_GENERATION_MODES == set(VALID_GENERATION_MODES)
+        assert set(VALID_GENERATION_MODES) == DataValidator.VALID_GENERATION_MODES
 
 
 class TestReferenceFamilyPredicate:
@@ -68,7 +68,7 @@ class TestGenerationModeTransitionGate:
         ],
     )
     def test_rejected_transitions(self, current, new):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="generation_mode"):
             validate_generation_mode_transition(current, new)
 
 

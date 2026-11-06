@@ -9,11 +9,11 @@ from pathlib import Path
 
 import pytest
 
-from lib.artifacts.visual_artifact_provenance import (
-    build_reference_video_artifact_visual_basis,
-)
 from lib.artifacts.video_visual_provenance import (
     build_reference_video_visual_basis,
+)
+from lib.artifacts.visual_artifact_provenance import (
+    build_reference_video_artifact_visual_basis,
 )
 from lib.script.reference_video.execution_checkpoint import (
     ProviderMediaInput,
@@ -177,7 +177,12 @@ def test_reference_checkpoint_accepts_single_start_image_and_rejects_extra(tmp_p
             media=stage_provider_media(
                 tmp_path,
                 "task-2",
-                (*inputs, ProviderMediaInput(path=extra, role="start_image", logical_type="unit", logical_name="E1U1", kind="first_frame")),
+                (
+                    *inputs,
+                    ProviderMediaInput(
+                        path=extra, role="start_image", logical_type="unit", logical_name="E1U1", kind="first_frame"
+                    ),
+                ),
             ),
         )
 

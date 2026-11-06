@@ -30,7 +30,6 @@ from lib.generation.video_request_facts import (
 )
 from lib.infra.path_safety import PathTraversalError, safe_join
 from lib.infra.schema_guards import is_int
-from lib.script.reference_video.units import is_first_frame_available
 from lib.project.asset_types import AssetSpec, asset_name_comparison_key
 from lib.references.reference_admission import (
     SHEET_REQUIRED_ASSET_TYPES,
@@ -44,6 +43,7 @@ from lib.script.reference_video.duration_slots import (
     project_request_duration,
 )
 from lib.script.reference_video.text_parser import derive_references_from_text
+from lib.script.reference_video.units import is_first_frame_available
 from lib.script.script_models import ReferenceResource
 
 if TYPE_CHECKING:
@@ -384,15 +384,17 @@ def hydrate_unit_references(
         )
 
     # 首帧水合：仅混合模式读取显式 authoring 字段，越界 / 缺文件均阻断（不静默换桶）。
+    # project_path 缺省时（报价降级模式等无项目目录的调用方）无法做项目内路径校验，
+    # 首帧候选按声明的相对路径交由 availability 适配器判定，与参考图资产同一条判定链。
     first_frame_declared: str | None = None
     first_frame: ResolvedReferenceAsset | None = None
     if project.get("generation_mode") == "mixed":
         raw = unit.get("first_frame_asset")
         if isinstance(raw, str) and raw.strip():
             first_frame_declared = raw
-            candidate = _candidate_path(project_path, raw) if project_path is not None else None
-            candidate_asset = ResolvedReferenceAsset(path=candidate, kind="first_frame") if candidate is not None else None
-            if candidate_asset is not None and availability.is_available(candidate_asset):
+            candidate = _candidate_path(project_path, raw) if project_path is not None else Path(raw)
+            candidate_asset = ResolvedReferenceAsset(path=candidate, kind="first_frame")
+            if availability.is_available(candidate_asset):
                 first_frame = candidate_asset
             else:
                 problems.append(_problem("first_frame_asset_missing", blocking=True, path=raw))
@@ -402,7 +404,9 @@ def hydrate_unit_references(
     declared_generation_type: VideoGenerationType = (
         "i2v" if first_frame_declared is not None else ("r2v" if canonical else "i2v")
     )
-    hydrated_generation_type: VideoGenerationType = "i2v" if first_frame is not None else ("r2v" if available else "i2v")
+    hydrated_generation_type: VideoGenerationType = (
+        "i2v" if first_frame is not None else ("r2v" if available else "i2v")
+    )
     if hydrated_generation_type != declared_generation_type:
         problems.append(
             _problem(

@@ -1100,6 +1100,9 @@ async def update_project(name: str, req: UpdateProjectRequest, _t: Translator):
             def _mutate(project: dict) -> None:
                 # 整段 read-modify-write 在单一 _project_lock 内完成，避免并发 PATCH / 任务回写丢更新
                 is_ad = project.get("content_mode") == "ad"
+                # 本次请求把项目转入 mixed 时置位：宫格只对分镜路线有意义，随后的
+                # grid_storyboard 分支据此不再把 true 写回（避免 mixed 项目带 grid=true）。
+                grid_storyboard_cleared_by_mode = False
                 if req.title is not None:
                     project["title"] = req.title
                 if req.style is not None:
@@ -1140,7 +1143,9 @@ async def update_project(name: str, req: UpdateProjectRequest, _t: Translator):
                     # 单向转换闸：storyboard / reference_video → mixed 放行，mixed 转出与
                     # 两原模式互换均 400；同值幂等。显式 null 无清除语义，同 400。
                     if req.generation_mode is None:
-                        raise BadRequestError("generation_mode_cannot_clear").with_diagnostic("generation_mode_cannot_clear")
+                        raise BadRequestError("generation_mode_cannot_clear").with_diagnostic(
+                            "generation_mode_cannot_clear"
+                        )
                     try:
                         validate_generation_mode_transition(project.get("generation_mode"), req.generation_mode)
                     except ValueError:
@@ -1149,13 +1154,19 @@ async def update_project(name: str, req: UpdateProjectRequest, _t: Translator):
                         ) from None
                     project["generation_mode"] = req.generation_mode
                     if req.generation_mode == "mixed":
-                        # 宫格开关仅 storyboard 有意义：转入 mixed 时清除，避免残留 true
+                        # 宫格开关仅 storyboard 有意义：转入 mixed 时清除，避免残留 true。
+                        # 同请求里 grid_storyboard 分支在后面，须让它不再把 true 写回来——
+                        # 否则「转 mixed + 开宫格」这一请求落盘出 mixed 项目带 grid_storyboard=true
+                        # 的矛盾状态（宫格只对分镜路线有意义）。
                         project["grid_storyboard"] = False
+                        grid_storyboard_cleared_by_mode = True
                 if "grid_storyboard" in req.model_fields_set:
                     if is_ad and req.grid_storyboard:
                         raise HTTPException(status_code=400, detail=_t("ad_grid_not_supported"))
-                    # null 与 false 同义：宫格关闭态落盘为显式 false，与创建路径同形态
-                    project["grid_storyboard"] = bool(req.grid_storyboard)
+                    # null 与 false 同义：宫格关闭态落盘为显式 false，与创建路径同形态。
+                    # 模式转换已把项目带进 mixed 时宫格无意义，不接受开启。
+                    if not grid_storyboard_cleared_by_mode:
+                        project["grid_storyboard"] = bool(req.grid_storyboard)
                 if "default_duration" in req.model_fields_set:
                     # ad 项目对字段出现本身即拒绝（含 null）：与创建路径"禁写字段"契约一致，
                     # 避免 null 走删除分支静默返回 200

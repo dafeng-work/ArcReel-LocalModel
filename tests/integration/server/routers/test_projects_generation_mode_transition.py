@@ -84,3 +84,28 @@ class TestGenerationModeTransition:
             resp = client.patch("/api/v1/projects/ready", json={"generation_mode": "storyboard"})
             assert resp.status_code == 200
             assert fake_pm.project_data["ready"]["generation_mode"] == "storyboard"
+
+    def test_mixed_conversion_clears_grid_even_when_same_request_sets_it(self, tmp_path, monkeypatch):
+        """同一请求里既转 mixed 又开宫格：宫格不得被写回（mixed 项目无宫格语义）。"""
+        fake_pm = _FakePM(tmp_path)
+        fake_pm.project_data["ready"]["grid_storyboard"] = True
+        client = build_projects_client(monkeypatch, fake_pm)
+        with client:
+            resp = client.patch(
+                "/api/v1/projects/ready",
+                json={"generation_mode": "mixed", "grid_storyboard": True},
+            )
+            assert resp.status_code == 200, resp.text
+            data = fake_pm.project_data["ready"]
+            assert data["generation_mode"] == "mixed"
+            assert data["grid_storyboard"] is False
+
+    def test_grid_toggle_still_works_without_mode_change(self, tmp_path, monkeypatch):
+        """不含模式变更的请求里，宫格开关照常生效（本次修复不影响既有行为）。"""
+        fake_pm = _FakePM(tmp_path)
+        fake_pm.project_data["ready"]["grid_storyboard"] = False
+        client = build_projects_client(monkeypatch, fake_pm)
+        with client:
+            resp = client.patch("/api/v1/projects/ready", json={"grid_storyboard": True})
+            assert resp.status_code == 200, resp.text
+            assert fake_pm.project_data["ready"]["grid_storyboard"] is True

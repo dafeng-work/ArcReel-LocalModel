@@ -255,13 +255,10 @@ def validate_unit_text(
     # 裸提及 ``@本体/衍生``：解析器在斜线处停笔，衍生段静默回落到本体——未登记的衍生
     # （如男性专属衍生挂到女性角色）就这样漏过 missing。按完整引用名判登记。
     character_references = catalog.reference_names("character")
-    bad_derivatives = sorted(
-        {ref for ref in pending_derivative_references(text) if ref not in character_references}
-    )
+    bad_derivatives = sorted({ref for ref in pending_derivative_references(text) if ref not in character_references})
     if bad_derivatives:
         raise DraftViolation(
-            f"{label} 引用了未登记的衍生: {bad_derivatives}；"
-            "衍生须先登记在该角色下，或改写成本体名 `@[角色]`",
+            f"{label} 引用了未登记的衍生: {bad_derivatives}；衍生须先登记在该角色下，或改写成本体名 `@[角色]`",
             code="unregistered_reference_derivative",
             label=label,
         )
@@ -410,7 +407,9 @@ _POSE_SHOT_SIZE_KEYWORDS = ("中景", "全景", "远景")
 _POSE_FRAME_KEYWORDS = ("入画", "入镜", "全身")
 
 #: 关系词黑名单数据文件（一行一词，`#` 注释）：词表维护不动代码。
-_RELATIONAL_BLACKLIST_PATH = Path(__file__).resolve().parents[2] / "prompts" / "prompt_rules" / "relational_word_blacklist.txt"
+_RELATIONAL_BLACKLIST_PATH = (
+    Path(__file__).resolve().parents[2] / "prompts" / "prompt_rules" / "relational_word_blacklist.txt"
+)
 
 
 @lru_cache(maxsize=1)
@@ -515,9 +514,7 @@ def validate_pose_lock(label: str, text: str, previous_skeleton: str | None) -> 
         )
 
 
-def validate_mention_closure(
-    label: str, plan_text: str, prompt_text: str, project: dict[str, Any]
-) -> None:
+def validate_mention_closure(label: str, plan_text: str, prompt_text: str, project: dict[str, Any]) -> None:
     """提及集合闭环：prompt 正文的每个 ``@`` 提及须来自 plan 对应单元或角色表。
 
     plan 是离源文最近的已审层：只出现在 prompt 里的新角色是幽灵名字类语义漂移

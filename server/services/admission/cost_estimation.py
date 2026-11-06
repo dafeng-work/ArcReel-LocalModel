@@ -804,7 +804,13 @@ class CostEstimationService:
             availability = _AssumeResolvedAssetsAvailable()
         else:
             availability = CurrentReferenceAssets(self._project_path, project)
-        projector = ReferenceUnitRequestProjector(request_facts_lookup, availability)
+        # project_path 必须传入：混合模式首帧的水合（项目内路径 + 文件存在判定）以项目目录
+        # 为边界，缺它时投影侧无法定位首帧，mixed 带首帧的单元会被误判 missing 而估不出价。
+        projector = ReferenceUnitRequestProjector(
+            request_facts_lookup,
+            availability,
+            project_path=self._project_path,
+        )
 
         for unit in units:
             if not isinstance(unit, dict):

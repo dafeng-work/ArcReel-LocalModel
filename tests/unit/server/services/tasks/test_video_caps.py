@@ -64,3 +64,46 @@ async def test_project_video_caps_degrades_silent_on_double_failure(monkeypatch:
     monkeypatch.setattr(video_caps, "ConfigResolver", _FakeResolver)
     caps = await video_caps.project_video_caps({"video_generate_audio": False}, degraded_to="test")
     assert caps == {"requested_generate_audio": False}
+
+
+@pytest.mark.parametrize(
+    ("generation_mode", "generation_type", "expected_route"),
+    [
+        # 参考家族（reference_video / mixed）走参考 route
+        ("reference_video", "r2v", "reference_video"),
+        ("mixed", "r2v", "reference_video"),
+        ("mixed", "i2v", "reference_video"),
+        # r2v 桶恒走参考 route（桶身份本身决定）
+        ("storyboard", "r2v", "reference_video"),
+        # 分镜路线走分镜 route
+        ("storyboard", "i2v", "storyboard"),
+    ],
+)
+async def test_capability_request_facts_route_follows_reference_family(
+    monkeypatch: pytest.MonkeyPatch,
+    generation_mode: str,
+    generation_type: str,
+    expected_route: str,
+):
+    """混合模式同属参考家族：能力查询与音频开关判据都走参考 route（错误码前缀与参考项目一致）。"""
+    seen: dict = {}
+
+    async def _fake_evaluate(project, *, route, generation_type, identity, resolver, resolution_override=None):
+        seen["route"] = route
+        return {"provider_id": "p", "model_id": "m"}
+
+    monkeypatch.setattr(video_caps, "evaluate_video_request_facts", _fake_evaluate)
+
+    class _FakeResolver:
+        def __init__(self, _session_factory):
+            pass
+
+    monkeypatch.setattr(video_caps, "ConfigResolver", _FakeResolver)
+    monkeypatch.setattr(video_caps, "require_video_request_facts", lambda facts: facts)
+
+    await video_caps.capability_request_facts(
+        {"generation_mode": generation_mode},
+        generation_type=generation_type,
+        config_resolver=_FakeResolver(None),
+    )
+    assert seen["route"] == expected_route

@@ -12,8 +12,8 @@ status: accepted
 
 - `mixed` 属于**参考家族**：`is_reference_family_project` 覆盖 `reference_video` 与 `mixed`。分镜路线的端点、执行器、准入对 mixed 项目整体关闭（mixed 项目没有分镜实体）；参考家族端点对 mixed 项目开放。
 - **单向汇点**：转换矩阵只允许 `storyboard → mixed` 与 `reference_video → mixed`，`mixed` 不可转出（任何目标值均拒绝）。`validate_generation_mode_transition` 是该矩阵的单一实现，PATCH 项目端点在其上做闸。storyboard 项目转入 mixed 时，既有分镜实体不被删除但不再被视频管线消费——等于放弃分镜路线，需要按参考单元重新组织内容（重拆后果），UI 在转换确认里明示。
-- 模式级**代表桶**：无单元上下文时（项目级 caps、计价主模型、自报身份、pair 自报），mixed 回退参考家族代表桶 `r2v`（`lib/config/resolver.py` 的 `VIDEO_BUCKET_BY_GENERATION_MODE`）。逐单元真桶由执行器按 `resolve_unit_video_bucket`（mixed）/ `reference_video_bucket`（reference_video，保留无参考图时降级 t2v 的既有行为）解析。代表桶是读侧回退值，不是逐单元承诺。
-- 首帧资产是**单元字段** `first_frame_asset`（项目内图片路径，Pydantic 严格白名单登记）。服务端闸：非 mixed 项目设值 → 400；mixed 项目空串 = 清除。可用性判据单一出口 `is_first_frame_available`（safe_join 语义 + 文件系统存在），投影层与执行器共用。
+- 模式级**代表桶**：无单元上下文时（项目级 caps、计价主模型、自报身份、pair 自报），mixed 回退参考家族代表桶 `r2v`（`lib/config/resolver.py` 的 `VIDEO_BUCKET_BY_GENERATION_MODE`）。逐单元真桶由 `resolve_unit_video_bucket` 解析：mixed 与 reference_video 同规则（首帧可用 → i2v 首帧优先；否则有可用参考图 → r2v；无参考图降级 i2v t2v），读侧（投影层 `hydrate_unit_references` 的 hydrated 桶）与执行侧共用这一判据——两边对同一单元必须给出同一个桶，否则 lane 事实解析会以 `reference_capability_unavailable` 阻断本可生成的单元。代表桶是读侧回退值，不是逐单元承诺。
+- 首帧资产是**单元字段** `first_frame_asset`（项目内图片路径，Pydantic 严格白名单登记）。服务端闸：非 mixed 项目设值 → 400；mixed 项目空串 = 清除。可用性判据单一出口 `is_first_frame_available`（safe_join 语义 + 存在**普通文件**，与投影侧资产适配器同判据），投影层与执行器共用。
 - 首帧模式下参考图**不发**，投影侧给非阻断问题码 `references_ignored_in_first_frame_mode`；首帧缺失时给 `first_frame_asset_missing`。暂存走 `start_image` role（`logical_type="unit"`），与参考图槽独立；checkpoint 对 reference-kind 允许 start_image/end_image 各至多 1 个。
 - **批量排队不支持**：`admit_reference_video_batch` 顶部 mixed 闸，在任何状态探测前结构化拒绝（`mixed_mode_batch_not_supported`）。批量语义是「一次准入、整批入队」，逐单元定桶的项目里整批共享一个桶假设不成立；逐单元生成入口不受影响。
 - 视觉摘要（artifact provenance / currency）计入首帧：首帧变更使既有视频产物失效。首帧走文件系统判据，不走 manifest 认领（`_claim_for` 对 `kind="first_frame"` 返回 None）。
